@@ -4,12 +4,13 @@ import time
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from torchmetrics import Metric
 from torchmetrics.classification import (
     MulticlassAccuracy,
     MulticlassConfusionMatrix,
     MulticlassF1Score,
 )
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore[import]
 
 from src.models.utils import process_segmentation_tensor
 from src.utils.mlflow_utils import (
@@ -64,7 +65,7 @@ def calculate_iou_scores(
 def get_evaluation_metrics_dict(
     num_classes: int,
     device: torch.device,
-) -> dict[str, torch.nn.Module]:
+) -> dict[str, Metric]:
     """Initialize TorchMetrics for multiclass classification."""
     return {
         "conf_matrix": MulticlassConfusionMatrix(num_classes=num_classes).to(device),
@@ -93,8 +94,92 @@ def compute_timing_metrics(
     }
 
 
+def _perform_warmup(
+    model: nn.Module,
+    device: torch.device,
+    data_loader: DataLoader,
+    warmup_runs: int,
+) -> None:
+    """Run a series of warmup forward passes to stabilize timings."""
+    if warmup_runs <= 0:
+        return
+
+    logger.info("Performing %d warmup runs...", warmup_runs)
+    with torch.no_grad():
+        for warmup_count, batch in enumerate(data_loader):
+            if warmup_count >= warmup_runs:
+                break
+            inputs = batch[0].to(device)
+            _ = model(inputs)
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+    logger.info("Warmup runs completed")
+
+
+def _forward_with_timing(
+    model: nn.Module,
+    inputs: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, float]:
+    """Run a forward pass and measure its duration in seconds."""
+    if torch.cuda.is_available() and device.type == "cuda":
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        outputs = model(inputs)
+        end_event.record()
+        torch.cuda.synchronize()
+        batch_time = start_event.elapsed_time(end_event) / 1000.0
+    else:
+        start = time.perf_counter()
+        outputs = model(inputs)
+        batch_time = time.perf_counter() - start
+
+    return outputs, batch_time
+
+
+def _evaluate_batches(
+    model: nn.Module,
+    device: torch.device,
+    data_loader: DataLoader,
+    num_classes: int,
+    evaluation_metrics_dict: dict[str, Metric],
+    sample_ids_to_log: set[str],
+) -> tuple[list[float], list[int]]:
+    """Iterate over the dataloader, update metrics, and collect timing stats."""
+    inference_times: list[float] = []
+    batch_sizes: list[int] = []
+
+    with torch.no_grad():
+        for batch in tqdm(data_loader, desc="Evaluating", leave=False):
+            inputs, targets, sample_ids = batch
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+
+            outputs, batch_time = _forward_with_timing(model, inputs, device)
+            inference_times.append(batch_time)
+            batch_sizes.append(inputs.shape[0])
+
+            processed_outputs = process_segmentation_tensor(outputs, num_classes)
+
+            for metric in evaluation_metrics_dict.values():
+                metric.update(processed_outputs, targets)
+
+            if sample_ids_to_log:
+                selected_ids = {
+                    sample_id for sample_id in sample_ids if sample_id in sample_ids_to_log
+                }
+                if selected_ids:
+                    log_prediction_plots(outputs, sample_ids, num_classes, selected_ids)
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return inference_times, batch_sizes
+
+
 def _finalize_evaluation(
-    evaluation_metrics_dict: dict[str, torch.nn.Module],
+    evaluation_metrics_dict: dict[str, Metric],
     inference_times: list[float],
     batch_sizes: list[int],
     class_name_mapping: dict[int, str],
@@ -201,58 +286,16 @@ def evaluate(
 
     sample_ids_to_log = set(sample_ids_to_plot) if sample_ids_to_plot else set()
 
-    if warmup_runs > 0:
-        logger.info("Performing %d warmup runs...", warmup_runs)
-        warmup_count = 0
-        with torch.no_grad():
-            for batch in data_loader:
-                if warmup_count >= warmup_runs:
-                    break
-                inputs, targets, sample_ids = batch
-                inputs = inputs.to(device)
-                _ = model(inputs)
-                if device.type == "cuda":
-                    torch.cuda.synchronize()
-                warmup_count += 1
-                del inputs
-        logger.info("Warmup runs completed")
+    _perform_warmup(model, device, data_loader, warmup_runs)
 
-    inference_times = []
-    batch_sizes = []
-
-    with torch.no_grad():
-        for batch in tqdm(data_loader, desc="Evaluating", leave=False):
-            inputs, targets, sample_ids = batch
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-
-            if torch.cuda.is_available() and device.type == "cuda":
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
-                start_event.record()
-                outputs = model(inputs)
-                end_event.record()
-                torch.cuda.synchronize()
-                batch_time = start_event.elapsed_time(end_event) / 1000.0
-            else:
-                start = time.perf_counter()
-                outputs = model(inputs)
-                batch_time = time.perf_counter() - start
-
-            inference_times.append(batch_time)
-            batch_sizes.append(inputs.shape[0])
-
-            targets = process_segmentation_tensor(targets, num_classes)
-            for metric in evaluation_metrics_dict.values():
-                metric.update(outputs, targets)
-
-            if sample_ids_to_log:
-                intersect = set(sample_ids) & sample_ids_to_log
-                if intersect:
-                    log_prediction_plots(outputs, sample_ids, num_classes, intersect)
-
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+    inference_times, batch_sizes = _evaluate_batches(
+        model,
+        device,
+        data_loader,
+        num_classes,
+        evaluation_metrics_dict,
+        sample_ids_to_log,
+    )
 
     logger.info("Finished evaluation")
 

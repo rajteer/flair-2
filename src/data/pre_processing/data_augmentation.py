@@ -75,9 +75,9 @@ class FlairAugmentation:
         mask = mask.contiguous()
 
         aug_configs = {
-            "hflip": lambda img: torch.flip(img, dims=[2]),  # flip width
-            "vflip": lambda img: torch.flip(img, dims=[1]),  # flip height
-            "rotation": lambda img, k: torch.rot90(img, k=k, dims=[1, 2]),
+            "hflip": lambda img: torch.flip(img, dims=[-1]),  # flip width (W)
+            "vflip": lambda img: torch.flip(img, dims=[-2]),  # flip height (H)
+            "rotation": lambda img, k: torch.rot90(img, k=k, dims=(-2, -1)),
             "contrast": lambda img, factor: self._adjust_contrast_tensor(img, factor),
             "brightness": lambda img, factor: self._adjust_brightness_tensor(img, factor),
         }

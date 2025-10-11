@@ -2,42 +2,118 @@ import io
 import logging
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import mlflow
 import torch
 from torchinfo import summary
 
 from src.data.pre_processing.data_augmentation import FlairAugmentation
-from src.models.utils import process_segmentation_tensor
 from src.utils.mlflow_utils import log_metrics_to_mlflow, log_model_to_mlflow
 from src.utils.model_stats import compute_model_complexity
 
 logger = logging.getLogger(__name__)
 
 
-def compute_loss(
+def _log_model_description(
     model: torch.nn.Module,
-    inputs: torch.Tensor,
-    targets: torch.Tensor,
+    device: torch.device,
+    sample_input_shape: tuple[int, ...],
+) -> None:
+    """Create and log a model summary and complexity metrics for the given input shape."""
+    model_info = ""
+
+    with io.StringIO() as buf:
+        model_summary = summary(
+            model,
+            input_size=sample_input_shape,
+            device=str(device),
+            verbose=0,
+            col_names=[
+                "input_size",
+                "output_size",
+                "num_params",
+                "kernel_size",
+                "mult_adds",
+            ],
+            row_settings=["var_names"],
+        )
+        print(model_summary, file=buf)
+        model_info = buf.getvalue()
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".txt",
+        delete=False,
+        encoding="utf-8",
+    ) as tmp:
+        tmp.write(model_info)
+        tmp_path = tmp.name
+    mlflow.log_artifact(tmp_path, "model_architecture")
+    Path(tmp_path).unlink()
+
+    complexity = compute_model_complexity(
+        model=model,
+        input_size=sample_input_shape,
+    )
+    for k, v in complexity.items():
+        mlflow.log_metric(k, float(v))
+
+
+def _get_sample_input_shape(
+    loader: torch.utils.data.DataLoader,
+) -> tuple[int, ...]:
+    """Return the shape of the first batch's input tensor as a tuple of ints."""
+    batch = next(iter(loader))
+    return tuple(int(x) for x in batch[0].shape)
+
+
+def _train_epoch(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
     criterion: torch.nn.Module,
-    num_classes: int = 13,
-) -> torch.Tensor:
-    """Compute the loss for a given model, inputs, and targets.
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    augmenter: FlairAugmentation | None = None,
+) -> float:
+    """Train the model for a single epoch and return average loss."""
+    model.train()
+    total_loss = 0.0
 
-    Args:
-        model: PyTorch model.
-        inputs: Input tensor.
-        targets: Target tensor.
-        criterion: Loss function.
-        num_classes: Number of classes in the segmentation task.
+    for x_batch, y_batch, *_ in loader:
+        x = x_batch.to(device)
+        y = y_batch.to(device)
 
-    Returns:
-        torch.Tensor: Computed loss.
+        if augmenter is not None:
+            x, y = augmenter(x, y)
 
-    """
-    outputs = model(inputs)  # (N, C, H, W)
-    targets = process_segmentation_tensor(targets, num_classes)  # (N, H, W)
-    return criterion(outputs, targets)
+        optimizer.zero_grad()
+        outputs = model(x)
+        loss = criterion(outputs, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += float(loss.item())
+
+    return total_loss / len(loader)
+
+
+def _validate_epoch(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+) -> float:
+    """Validate the model for a single epoch and return average loss."""
+    model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for x_batch, y_batch, *_ in loader:
+            x = x_batch.to(device)
+            y = y_batch.to(device)
+            outputs = model(x)
+            loss = criterion(outputs, y)
+            val_loss += float(loss.item())
+    return val_loss / len(loader)
 
 
 def train(
@@ -52,7 +128,7 @@ def train(
     num_classes: int = 13,
     *,
     apply_augmentations: bool = True,
-    augmentation_config: dict | None = None,
+    augmentation_config: dict[str, Any] | None = None,
     log_evaluation_metrics: bool = True,
     log_model: bool = True,
 ) -> dict[str, list[float] | float]:
@@ -82,66 +158,20 @@ def train(
         dict: History of training and validation losses, and best validation loss.
             The best model is logged as an MLflow artifact 'best_model' if
             log_to_mlflow is True.
-
-    Raises:
-        ValueError: If train_loader or val_loader are empty.
-
     """
-    if len(train_loader) == 0:
-        msg = "Training data loader is empty"
-        raise ValueError(msg)
-    if len(val_loader) == 0:
-        msg = "Validation data loader is empty"
-        raise ValueError(msg)
-
     model.to(device)
 
-    sample_input_shape = next(iter(train_loader))[0].shape
-    model_info = ""
+    sample_input_shape = _get_sample_input_shape(train_loader)
 
     if log_evaluation_metrics:
-        with io.StringIO() as buf:
-            model_summary = summary(
-                model,
-                input_size=sample_input_shape,
-                device=str(device),
-                verbose=0,
-                col_names=[
-                    "input_size",
-                    "output_size",
-                    "num_params",
-                    "kernel_size",
-                    "mult_adds",
-                ],
-                row_settings=["var_names"],
-            )
-            print(model_summary, file=buf)
-            model_info = buf.getvalue()
-
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".txt",
-            delete=False,
-            encoding="utf-8",
-        ) as tmp:
-            tmp.write(model_info)
-            tmp_path = tmp.name
-        mlflow.log_artifact(tmp_path, "model_architecture")
-        Path(tmp_path).unlink()
-
-        complexity = compute_model_complexity(
-            model=model,
-            input_size=tuple(int(x) for x in sample_input_shape),
-        )
-        for k, v in complexity.items():
-            mlflow.log_metric(k, float(v))
+        _log_model_description(model, device, sample_input_shape)
 
     best_val_loss = float("inf")
     no_improve = 0
     losses_train: list[float] = []
     losses_val: list[float] = []
 
-    augmenter = FlairAugmentation(augmentation_config) if apply_augmentations else None
+    augmenter = FlairAugmentation(augmentation_config or {}) if apply_augmentations else None
     best_model_state = None
 
     lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(
@@ -149,37 +179,18 @@ def train(
     )
 
     for epoch in range(epochs):
-        model.train()
-        total_loss = 0.0
-
-        for inputs, targets, *_ in train_loader:
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-
-            if apply_augmentations:
-                inputs, targets = augmenter(inputs, targets)
-
-            optimizer.zero_grad()
-            loss = compute_loss(model, inputs, targets, criterion, num_classes)
-            loss.backward()
-            optimizer.step()
-            total_loss += float(loss.item())
-
-        loss_epoch = total_loss / len(train_loader)
+        loss_epoch = _train_epoch(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            augmenter,
+        )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
 
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for inputs, targets, *_ in val_loader:
-                inputs = inputs.to(device)
-                targets = targets.to(device)
-
-                loss = compute_loss(model, inputs, targets, criterion, num_classes)
-                val_loss += float(loss.item())
-
-        val_loss /= len(val_loader)
+        val_loss = _validate_epoch(model, val_loader, criterion, device)
         losses_val.append(val_loss)
         logger.info("Epoch %d/%d: Validation Loss: %.4f", epoch + 1, epochs, val_loss)
 
