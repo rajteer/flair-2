@@ -1,4 +1,23 @@
+# Data and notebooks
 data/
-.qodo
 notebooks/
-idea/
+
+# IDEs
+.idea/
+.vscode/
+
+# uv / virtual env
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Misc
+.DS_Store
+.qodo

@@ -3,11 +3,16 @@ import sys
 from pathlib import Path
 
 LOG_FORMATTER = logging.Formatter(
-    "%(asctime)s:%(levelname)s:%(threadName)s:%(name)s::  %(message)s"
+    "%(asctime)s:%(levelname)s:%(threadName)s:%(name)s::  %(message)s",
 )
 
 
-def setup_logging(log_file: Path, log_formatter: logging.Formatter, no_stdout_logs: bool) -> None:
+def setup_logging(
+    log_file: Path,
+    log_formatter: logging.Formatter,
+    *,
+    no_stdout_logs: bool,
+) -> None:
     """Set up logging to file and optionally to stdout."""
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)

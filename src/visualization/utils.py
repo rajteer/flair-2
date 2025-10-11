@@ -17,7 +17,7 @@ flair_cmap = {
     12: "#000000",
 }
 
-msk_to_name = {
+mask_to_name_en = {
     0: "building",
     1: "pervious surface",
     2: "impervious surface",
@@ -31,6 +31,27 @@ msk_to_name = {
     10: "agricultural land",
     11: "plowed land",
     12: "other",
+}
+
+mask_to_name_pl = {
+    0: "budynek",
+    1: "pow. przepuszczalna",
+    2: "pow. nieprzepuszczalna",
+    3: "gleba odsłonięta",
+    4: "woda",
+    5: "drzewa iglaste",
+    6: "drzewa liściaste",
+    7: "zarośla",
+    8: "winnica",
+    9: "roślinność zielna",
+    10: "użytki rolne",
+    11: "ziemia orna",
+    12: "inne",
+}
+
+class_name_mapping = {
+    "eng": mask_to_name_en,
+    "pl": mask_to_name_pl,
 }
 
 train_data_percentages = (
@@ -67,12 +88,12 @@ test_data_percentages = (
 
 
 def get_custom_colormap() -> tuple[mcolors.ListedColormap, mcolors.BoundaryNorm]:
-    """
-    Creates and returns a custom matplotlib colormap and normalization based on predefined flair
-    color mappings.
+    """Create and return a custom matplotlib colormap and BoundaryNorm.
 
     Returns:
-        tuple: A tuple containing the custom ListedColormap and its corresponding BoundaryNorm.
+        tuple[mcolors.ListedColormap, mcolors.BoundaryNorm]: The colormap and
+            its corresponding normalization object.
+
     """
     colors_list = [flair_cmap[key] for key in flair_cmap]
     cmap = mcolors.ListedColormap(colors_list, name="custom_lut_map")
