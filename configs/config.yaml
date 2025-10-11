@@ -1,61 +1,85 @@
 data:
-  train_images_dir: "/home/prajter/PycharmProjects/Flair-2/data/split_30/train/images"
-  train_masks_dir: "/home/prajter/PycharmProjects/Flair-2/data/split_30/train/masks"
+  train:
+    images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_train"
+    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_train"
 
-  test_images_dir: "/home/prajter/PycharmProjects/Flair-2/data/split_30/test/images"
-  test_masks_dir: "/home/prajter/PycharmProjects/Flair-2/data/split_30/test/masks"
+  val:
+    images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_test"
+    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
 
-  val_images_dir: "/home/prajter/PycharmProjects/Flair-2/data/split_30/val/images"
-  val_masks_dir: "/home/prajter/PycharmProjects/Flair-2/data/split_30/val/masks"
-
-  plot_image_ids_path: "/home/prajter/PycharmProjects/Flair-2/notebooks/test_split/test_plot_ids.npy"
-
+  test:
+    images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_test"
+    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
+  
+  plot_image_ids_path: ""
   dataset_version: "split_40"
   num_classes: 13
-  batch_size: 8
-  num_workers: 12
-  selected_channels: [ 0, 1, 2, 3, 4 ]
-  seed: 42
-  apply_augmentation: true
-  augmentation_prob: 0.5
-  other_class_index: 12 # we are indexing from 1, so 12 is the 13th class
+  batch_size: 4
+  num_workers: 0
+  selected_channels: [0, 1, 2, 3, 4]
+  other_class_index: 12
 
+  data_augmentation:
+    apply_augmentations: true
+    augmentations:
+      hflip:
+        prob: 0.5
+      vflip:
+        prob: 0.5
+      rotation:
+        prob: 0.5
+        angles: [0, 90, 180, 270]
+      contrast:
+        prob: 0.5
+        range: [0.8, 1.2]
+      brightness:
+        prob: 0.5
+        range: [0.8, 1.2]
 
 mlflow:
   name: "aerial_images-only"
   run_name: "DeepLabV3Plus_efficientnet_b5_cross_entropy_split_45"
-#  run_name: "TEST"
-  tracking_uri: "file:///home/prajter/PycharmProjects/Flair-2/data/results/mlruns"
-  notes: "pipeline_test"
-  requirements_path: "/home/prajter/PycharmProjects/Flair-2/requirements.txt"
+  tracking_uri: "/Users/test/P/flair-2/flair_2_toy_dataset"
+  note: "pipeline_test"
 
 model:
-  model_type: "DeepLabV3Plus"
-  encoder_name: "efficientnet-b4"
+  model_type: "Segformer"
+  encoder_name: "mit_b0"
   encoder_weights: "imagenet"
-  activation: None
+  activation: null
 
 training:
   device: "cuda"
-  learning_rate: 1e-4
-  weight_decay: 1e-5
-  optimizer: "AdamW"
-  epochs: 10
+  optimizer:
+    type: "AdamW"
+    learning_rate: 1e-4
+    betas: [0.9, 0.95]
+    weight_decay: 1e-5
+  epochs: 2
   early_stopping_patience: 3
   loss_function:
-    type: "SoftCrossEntropyLoss"
+    type: "LovaszLoss"
     args:
-#      mode: "multiclass"
-#      from_logits: true
-#      reduction: mean
-      smooth_factor: 0.0
-      ignore_index: 12
+#      smooth_factor: 0.0
+#      ignore_index: 12
+      mode: "multiclass"
 
-optimizer:
-  betas: [ 0.9, 0.95 ]
-  weight_decay: 0.001
+experiment:
+  seed: 42
+  deterministic: true
 
 evaluation:
   log_confusion_matrix: true
   log_comparison: true
-  eval_per_sample: true
+  log_sample_ids: ["006512",  "006975"]
+
+visualization:
+  language: "pl"  # or "en" for English
+  labels:
+    ground_truth: "Rzeczywistość"
+    prediction: "Predykcja"
+    predicted_class: "Klasa przewidywana"
+    actual_class: "Klasa rzeczywista"
+    confusion_matrix_title: "Macierz pomyłek"
+
+
