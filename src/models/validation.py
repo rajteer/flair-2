@@ -14,9 +14,9 @@ from tqdm import tqdm  # type: ignore[import]
 
 from src.models.utils import process_segmentation_tensor
 from src.utils.mlflow_utils import (
-    log_confusion_to_mlflow,
     log_metrics_to_mlflow,
     log_prediction_plots,
+    log_confusion_matrix_to_mlflow,
 )
 
 logger = logging.getLogger(__name__)
@@ -232,7 +232,7 @@ def _finalize_evaluation(
                 labels["actual_class"],
             )
 
-        log_confusion_to_mlflow(
+        log_confusion_matrix_to_mlflow(
             confusion_matrix,
             list(class_name_mapping.values()),
             confusion_other_index,

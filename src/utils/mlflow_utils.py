@@ -1,11 +1,15 @@
 import logging
+import re
 import tempfile
 from pathlib import Path
+from typing import Any
 
+import dagshub
 import mlflow
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+from mlflow.exceptions import MlflowException, RestException
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, TensorSpec
 
@@ -16,23 +20,68 @@ from src.visualization.utils import get_custom_colormap
 
 logger = logging.getLogger(__name__)
 
+DAGSHUB_PARAMS = {"repo_owner", "repo_name", "mlflow", "branch", "log_mlflow"}
 
-def init_mlflow(tracking_uri: str, experiment_name: str) -> None:
-    """Initialize MLflow with the given tracking URI and experiment name.
+
+def _sanitize_filename(name: str) -> str:
+    """Return a filesystem-safe filename stem.
+
+    Replaces characters that could introduce directories or be invalid on
+    various filesystems. Collapses multiple underscores and strips leading/
+    trailing underscores. Falls back to "sample" when the sanitized name
+    would be empty.
 
     Args:
-        tracking_uri: URI to the MLflow tracking server.
-        experiment_name: The name of the experiment to track in MLflow.
+        name: The original filename or identifier to sanitize.
+
+    Returns:
+        A filesystem-safe string containing only alphanumeric characters,
+        hyphens, and underscores.
 
     """
-    mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment(experiment_name)
+    safe = re.sub(r"[^\w\-]", "_", name.strip())
+    safe = re.sub(r"_+", "_", safe)
+    return safe.strip("_")
 
-    logger.info(
-        "MLflow initialized with tracking URI: %s and experiment: %s",
-        tracking_uri,
-        experiment_name,
-    )
+
+def init_mlflow(
+    tracking_uri: str | None,
+    experiment_name: str,
+    dagshub_config: dict[str, Any] | None = None,
+) -> None:
+    """Initialize MLflow and optionally bootstrap Dagshub integration.
+
+    Args:
+        tracking_uri: URI to the MLflow tracking server. If ``None`` and Dagshub
+            integration is disabled, MLflow will use its default local store.
+        experiment_name: The name of the experiment to track in MLflow.
+        dagshub_config: Optional Dagshub configuration dictionary. Expected keys
+            include ``enabled``, ``repo_owner``, ``repo_name``, ``mlflow`` and
+            ``branch``. When ``enabled`` is truthy, the function will call
+            :func:`dagshub.init` before configuring MLflow.
+
+    """
+    dagshub_active = False
+    if dagshub_config and dagshub_config.get("enabled"):
+        kwargs = {k: v for k, v in dagshub_config.items() if k in DAGSHUB_PARAMS and v is not None}
+
+        dagshub.init(**kwargs)
+        dagshub_active = True
+        logger.info(
+            "DagsHub initialized for %s/%s (MLflow tracking configured automatically)",
+            dagshub_config.get("repo_owner"),
+            dagshub_config.get("repo_name"),
+        )
+
+    if not dagshub_active:
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+            logger.info("MLflow tracking URI: %s", tracking_uri)
+        else:
+            logger.info("No tracking URI configured. Using local MLflow store (./mlruns).")
+
+    mlflow.set_experiment(experiment_name)
+    logger.info("MLflow experiment set to '%s' ", experiment_name)
 
 
 def log_metrics_to_mlflow(
@@ -77,7 +126,7 @@ def log_comparison_to_mlflow(
         mlflow.log_artifact(str(fig_path), artifact_path="plots/comparison")
 
 
-def log_confusion_to_mlflow(
+def log_confusion_matrix_to_mlflow(
     conf_matrix: torch.Tensor,
     class_names: list[str],
     other_class_index: int,
@@ -118,7 +167,8 @@ def log_confusion_to_mlflow(
         cm_np = conf_matrix.detach().cpu().numpy()
         csv_path = td_path / "confusion_matrix.csv"
         header = ",".join(["", *list(class_names)])
-        np.savetxt(csv_path, cm_np, delimiter=",", header=header, comments="", fmt="%g")
+        with Path.open(csv_path, "w", encoding="utf-8") as f:
+            np.savetxt(f, cm_np, delimiter=",", header=header, comments="", fmt="%g")
         logger.info("Logging confusion matrix CSV to MLflow: %s", csv_path)
         mlflow.log_artifact(str(csv_path), artifact_path="plots")
 
@@ -171,41 +221,69 @@ def log_model_to_mlflow(
     )
 
     signature = ModelSignature(inputs=input_schema, outputs=output_schema)
-
-    mlflow.pytorch.log_model(
-        pytorch_model=model,
-        name=model_name,
-        signature=signature,
-    )
+    try:
+        mlflow.pytorch.log_model(
+            pytorch_model=model,
+            name=model_name,
+            signature=signature,
+        )
+    except RestException as exc:
+        message = str(exc).lower()
+        if "unsupported endpoint" in message or "405" in message:
+            logger.warning(
+                "Skipping MLflow model logging because the tracking server "
+                "reported an unsupported endpoint: %s",
+                exc,
+            )
+            return
+        raise
+    except MlflowException as exc:
+        logger.warning("Skipping MLflow model logging due to exception: %s", exc)
+        return
 
 
 def log_prediction_plots(
     outputs: torch.Tensor,
     ids: list[str],
     num_classes: int,
-    intersect: set[str],
+    intersect: set[str] | None = None,
 ) -> None:
-    """Log prediction plots to MLflow or local directory.
+    """Log prediction plots to MLflow.
 
     Args:
-        outputs: Model outputs (predictions).
-        ids: List of sample IDs.
+        outputs: Model outputs (predictions) with shape (batch, ...).
+        ids: List of sample IDs corresponding to each output.
         num_classes: Number of classes for segmentation.
-        intersect: Set of IDs to include in logging.
+        intersect: Set of IDs to include in logging. Only samples with IDs
+            in this set will be logged.
 
     """
-    outputs = process_segmentation_tensor(outputs, num_classes=num_classes).cpu()
+    n = min(len(outputs), len(ids))
+    if intersect is None:
+        filtered_indices = list(range(n))
+    else:
+        filtered_indices = [i for i, sample_id in enumerate(ids[:n]) if sample_id in intersect]
+
+    if not filtered_indices:
+        return
+
+    outputs = process_segmentation_tensor(outputs, num_classes=num_classes).cpu().numpy()
     custom_cmap, _ = get_custom_colormap()
 
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
-        for sample_id, output in zip(ids, outputs):
-            if sample_id not in intersect:
-                continue
-            fig, ax = plt.subplots()
-            ax.imshow(output.numpy(), cmap=custom_cmap)
+
+        for idx in filtered_indices:
+            sample_id = ids[idx]
+            output = outputs[idx]
+            safe_id = _sanitize_filename(sample_id)
+
+            fig, ax = plt.subplots(figsize=(10, 10))
+            ax.imshow(output, cmap=custom_cmap)
             ax.axis("off")
-            fig_path = td_path / f"{sample_id}_prediction.png"
-            fig.savefig(fig_path, bbox_inches="tight")
+
+            fig_path = td_path / f"{safe_id}_prediction.png"
+            fig.savefig(fig_path, bbox_inches="tight", dpi=150)
             plt.close(fig)
+
             mlflow.log_artifact(str(fig_path), artifact_path="plots/prediction")

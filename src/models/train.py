@@ -158,6 +158,7 @@ def train(
         dict: History of training and validation losses, and best validation loss.
             The best model is logged as an MLflow artifact 'best_model' if
             log_to_mlflow is True.
+
     """
     model.to(device)
 

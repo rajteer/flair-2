@@ -39,8 +39,13 @@ data:
 mlflow:
   name: "aerial_images-only"
   run_name: "DeepLabV3Plus_efficientnet_b5_cross_entropy_split_45"
-  tracking_uri: "/Users/test/P/flair-2/flair_2_toy_dataset"
+  tracking_uri: null
   note: "pipeline_test"
+  dagshub:
+    enabled: true
+    repo_owner: "prajter00"
+    repo_name: "flair-2"
+    branch: null
 
 model:
   model_type: "Segformer"

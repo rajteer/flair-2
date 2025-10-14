@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import mlflow
-import mlflow.pytorch
 import torch
 from torch.utils.data import DataLoader
 
@@ -41,9 +40,12 @@ class TrainEvalPipeline:
             no_stdout_logs: Flag to control logging to stdout. Defaults to False.
 
         """
+        mlflow_cfg = config["mlflow"]
+
         init_mlflow(
-            tracking_uri=config["mlflow"]["tracking_uri"],
-            experiment_name=config["mlflow"]["name"],
+            tracking_uri=mlflow_cfg.get("tracking_uri"),
+            experiment_name=mlflow_cfg["name"],
+            dagshub_config=mlflow_cfg.get("dagshub"),
         )
 
         setup_logging(
