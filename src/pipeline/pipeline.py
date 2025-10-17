@@ -1,6 +1,7 @@
 """Training and evaluation pipeline."""
 
 import argparse
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -12,7 +13,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.pre_processing.FlairDataset import FlairDataset
-from src.models.model_builder import build_loss_function, build_model, build_optimizer
+from src.models.model_builder import (
+    build_loss_function,
+    build_lr_scheduler,
+    build_model,
+    build_optimizer,
+)
 from src.models.train import train
 from src.models.validation import evaluate
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
@@ -92,8 +98,12 @@ class TrainEvalPipeline:
                     "weight_decay": config["training"]["optimizer"]["weight_decay"],
                     "epochs": config["training"]["epochs"],
                     "patience": config["training"]["early_stopping_patience"],
+                    "lr_scheduler": config["training"].get("lr_scheduler", {}).get("type", "None"),
                 },
             )
+
+            if scheduler_args := config["training"].get("lr_scheduler", {}).get("args"):
+                mlflow.log_param("lr_scheduler_args", json.dumps(scheduler_args))
 
             mlflow.log_params(
                 {
@@ -194,6 +204,11 @@ class TrainEvalPipeline:
                 betas=config["training"]["optimizer"]["betas"],
             )
 
+            lr_scheduler = build_lr_scheduler(
+                optimizer=optimizer,
+                scheduler_config=config["training"].get("lr_scheduler"),
+            )
+
             logger.info("Starting training model %s", config["model"]["model_type"])
 
             train(
@@ -202,6 +217,7 @@ class TrainEvalPipeline:
                 val_loader=val_loader,
                 criterion=criterion,
                 optimizer=optimizer,
+                scheduler=lr_scheduler,
                 device=device,
                 apply_augmentations=config["data"]["data_augmentation"]["apply_augmentations"],
                 augmentation_config=config["data"]["data_augmentation"]["augmentations"],

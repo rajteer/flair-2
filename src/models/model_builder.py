@@ -1,5 +1,9 @@
+from typing import Any
+
 import segmentation_models_pytorch as smp
 from torch import nn, optim
+from torch.optim import lr_scheduler as lr_schedulers
+from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss
 
@@ -49,6 +53,35 @@ def build_optimizer(
         weight_decay=weight_decay,
         betas=betas,
     )
+
+
+def build_lr_scheduler(
+    optimizer: optim.Optimizer,
+    scheduler_config: dict[str, Any] | None = None,
+) -> LRScheduler | None:
+    """Build and return a learning rate scheduler.
+
+    Args:
+        optimizer: Optimizer to wrap with the scheduler.
+        scheduler_config: Mapping containing the scheduler ``type`` and optional ``args``.
+
+    Returns:
+        Instantiated scheduler or ``None`` when configuration is missing.
+
+    """
+    if scheduler_config is None:
+        return None
+
+    scheduler_type = scheduler_config.get("type")
+    scheduler_args = scheduler_config.get("args", {})
+
+    try:
+        scheduler_class = getattr(lr_schedulers, scheduler_type)
+    except AttributeError as err:
+        msg = f"Unknown LR scheduler type: {scheduler_type}"
+        raise ValueError(msg) from err
+
+    return scheduler_class(optimizer, **scheduler_args)
 
 
 def build_loss_function(

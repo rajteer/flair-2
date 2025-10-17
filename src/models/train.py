@@ -6,6 +6,7 @@ from typing import Any
 
 import mlflow
 import torch
+from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torchinfo import summary
 
 from src.data.pre_processing.data_augmentation import FlairAugmentation
@@ -123,6 +124,7 @@ def train(
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    scheduler: LRScheduler | None = None,
     epochs: int = 100,
     patience: int = 20,
     num_classes: int = 13,
@@ -144,6 +146,7 @@ def train(
         criterion: Loss function.
         optimizer: Optimizer for training.
         device: Device (CPU/GPU).
+        scheduler: Optional learning rate scheduler.
         apply_augmentations: Whether to apply augmentations to the training data.
             Defaults to True.
         augmentation_config: Configuration for augmentations. Defaults to None.
@@ -174,10 +177,6 @@ def train(
 
     augmenter = FlairAugmentation(augmentation_config or {}) if apply_augmentations else None
     best_model_state = None
-
-    lr_scheduler = torch.optim.lr_scheduler.PolynomialLR(
-        optimizer,
-    )
 
     for epoch in range(epochs):
         loss_epoch = _train_epoch(
@@ -213,7 +212,11 @@ def train(
                 logger.info("Early stopping at epoch %d.", epoch + 1)
                 break
 
-        lr_scheduler.step()
+        if scheduler is not None:
+            if isinstance(scheduler, ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
 
         if log_evaluation_metrics:
             current_lr = optimizer.param_groups[0]["lr"]
