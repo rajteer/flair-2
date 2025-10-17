@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,11 +27,13 @@ logger = logging.getLogger(__name__)
 class TrainEvalPipeline:
     """Pipeline for training and evaluation."""
 
-    def __init__(self, run_name: str | None = None) -> None:
+    def __init__(self, run_name: str | None = None, logs_dir: str | None = None) -> None:
         """Initialize the TrainEvalPipeline class and set up logging configurations."""
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
-        run_suffix = f"_{run_name}" if run_name else ""
-        self.log_file = Path.cwd() / f"pipeline_{timestamp}{run_suffix}.log"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", run_name).strip("_") if run_name else ""
+        run_suffix = f"_{safe_name}" if safe_name else ""
+        logs_dir = Path(logs_dir).expanduser().resolve() if logs_dir else Path.cwd()
+        self.log_file = logs_dir / f"pipeline_{timestamp}{run_suffix}.log"
 
     def run(self, config: dict[str, Any], *, no_stdout_logs: bool = False) -> None:
         """Execute the training and evaluation pipeline.
@@ -188,6 +191,7 @@ class TrainEvalPipeline:
                 optimizer_type=config["training"]["optimizer"]["type"],
                 learning_rate=config["training"]["optimizer"]["learning_rate"],
                 weight_decay=config["training"]["optimizer"]["weight_decay"],
+                betas=config["training"]["optimizer"]["betas"],
             )
 
             logger.info("Starting training model %s", config["model"]["model_type"])
@@ -255,6 +259,14 @@ def add_train_eval_arguments(
     )
 
     parser.add_argument(
+        "-L",
+        "--logs-dir",
+        type=str,
+        default=None,
+        help="Directory to write pipeline logs.",
+    )
+
+    parser.add_argument(
         "-l",
         "--no-stdout-logs",
         required=False,
@@ -281,7 +293,7 @@ def run_train_eval(args: argparse.Namespace) -> None:
         raise ValueError(msg)
     config = read_yaml(config_file)
 
-    pipeline = TrainEvalPipeline(run_name=config["mlflow"]["run_name"])
+    pipeline = TrainEvalPipeline(run_name=config["mlflow"]["run_name"], logs_dir=args.logs_dir)
     pipeline.run(config, no_stdout_logs=args.no_stdout_logs)
 
 

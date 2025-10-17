@@ -34,6 +34,7 @@ def build_optimizer(
     optimizer_type: str,
     learning_rate: float,
     weight_decay: float = 0.0,
+    betas: tuple[float, float] | None = None,
 ) -> optim.Optimizer:
     """Build and return an optimizer for the given model."""
     try:
@@ -46,6 +47,7 @@ def build_optimizer(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
+        betas=betas,
     )
 
 
