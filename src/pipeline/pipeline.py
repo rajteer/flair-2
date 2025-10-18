@@ -275,7 +275,7 @@ def add_train_eval_arguments(
     )
 
     parser.add_argument(
-        "-L",
+        "-l",
         "--logs-dir",
         type=str,
         default=None,
@@ -283,11 +283,11 @@ def add_train_eval_arguments(
     )
 
     parser.add_argument(
-        "-l",
+        "-q",
         "--no-stdout-logs",
         required=False,
         action="store_true",
-        help="Disable logging in the terminal.",
+        help="Suppress logging output in the terminal.",
     )
 
     return parser
