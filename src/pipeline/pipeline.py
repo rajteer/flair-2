@@ -192,6 +192,7 @@ class TrainEvalPipeline:
                 encoder_weights=config["model"]["encoder_weights"],
                 in_channels=len(config["data"]["selected_channels"]),
                 n_classes=config["data"]["num_classes"],
+                dynamic_img_size=config["model"].get("dynamic_img_size", False),
             )
 
             model.to(device)

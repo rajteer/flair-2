@@ -51,6 +51,7 @@ model:
   encoder_name: "mit_b0"
   encoder_weights: "imagenet"
   activation: null
+  dynamic_img_size: false
 
 training:
   device: "cuda"
