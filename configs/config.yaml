@@ -2,14 +2,19 @@ data:
   train:
     images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_train"
     masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_train"
+    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_train"
 
   val:
     images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_test"
     masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
+    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_test"
 
   test:
     images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_test"
     masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
+    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_test"
+  
+  centroids_path: "/Users/test/P/flair-2/data/flair-2_centroids_sp_to_patch.json"
   
   dataset_version: "split_40"
   num_classes: 13
@@ -17,6 +22,18 @@ data:
   num_workers: 0
   selected_channels: [0, 1, 2, 3, 4]
   other_class_index: 12
+
+  use_sentinel: false 
+  load_sentinel_masks: false 
+  load_sentinel_dates: false
+  
+  # Sentinel-2 filtering
+  # Remove timesteps with >60% cloud/snow cover (probability threshold 0.5)
+  filter_clouds: false
+  sentinel_patch_size: 40
+  cloud_cover_threshold: 0.6  # Remove if >60% covered
+  cloud_prob_threshold: 0.5   # Consider pixel cloudy if prob >= 0.5  
+
 
   data_augmentation:
     apply_augmentations: true

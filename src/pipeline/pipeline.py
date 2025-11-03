@@ -118,25 +118,39 @@ class TrainEvalPipeline:
 
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
 
+            use_sentinel = config["data"].get("use_sentinel", False)
+            sentinel_config = {
+                "centroids_path": config["data"].get("centroids_path") if use_sentinel else None,
+                "use_sentinel": use_sentinel,
+                "load_sentinel_masks": config["data"].get("load_sentinel_masks", False),
+                "load_sentinel_dates": config["data"].get("load_sentinel_dates", False),
+            }
+
             test_dataset = FlairDataset(
                 image_dir=config["data"]["test"]["images"],
                 mask_dir=config["data"]["test"]["masks"],
+                sentinel_dir=config["data"]["test"].get("sentinel") if use_sentinel else None,
                 num_classes=config["data"]["num_classes"],
                 selected_channels=config["data"]["selected_channels"],
+                **sentinel_config,
             )
 
             train_dataset = FlairDataset(
                 image_dir=config["data"]["train"]["images"],
                 mask_dir=config["data"]["train"]["masks"],
+                sentinel_dir=config["data"]["train"].get("sentinel") if use_sentinel else None,
                 num_classes=config["data"]["num_classes"],
                 selected_channels=config["data"]["selected_channels"],
+                **sentinel_config,
             )
 
             val_dataset = FlairDataset(
                 image_dir=config["data"]["val"]["images"],
                 mask_dir=config["data"]["val"]["masks"],
+                sentinel_dir=config["data"]["val"].get("sentinel") if use_sentinel else None,
                 num_classes=config["data"]["num_classes"],
                 selected_channels=config["data"]["selected_channels"],
+                **sentinel_config,
             )
 
             generator = create_generator(seed)

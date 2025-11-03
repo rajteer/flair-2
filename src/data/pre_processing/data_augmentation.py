@@ -4,7 +4,6 @@ import torch
 
 
 class FlairAugmentation:
-
     def __init__(
         self,
         augmentation_config: dict,
@@ -14,16 +13,6 @@ class FlairAugmentation:
         clamp_max: float = 1.0,
     ) -> None:
         """Create a `FlairAugmentation` instance.
-
-        Example augmentation_config:
-
-        {
-          "hflip": {"prob": 0.5},
-          "vflip": {"prob": 0.5},
-          "rotation": {"prob": 0.5, "angles": [0,90,180,270]},
-          "contrast": {"prob": 0.5, "range": (0.8, 1.2)},
-          "brightness": {"prob": 0.5, "range": (0.8, 1.2)}
-        }
 
         Args:
             augmentation_config: Configuration dict for augmentations.
@@ -38,8 +27,6 @@ class FlairAugmentation:
         self.clamp_max = clamp_max
 
     def _adjust_contrast_tensor(self, image: torch.Tensor, factor: float) -> torch.Tensor:
-        # image shape (C,H,W) - operate per-channel relative to channel mean
-        # do arithmetic in float32 for stability
         orig_dtype = image.dtype
         image_f = image.to(torch.float32)
         mean = image_f.mean(dim=(1, 2), keepdim=True)  # (C,1,1)
@@ -100,11 +87,11 @@ class FlairAugmentation:
                     image = func(image)
                     mask = func(mask)
 
-
-
         return image, mask
 
-    def __call__(self, images: torch.Tensor, masks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def __call__(
+        self, images: torch.Tensor, masks: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # batch or single sample support
         if images.dim() == 4:  # batch (B,C,H,W)
             batch_size = images.size(0)
