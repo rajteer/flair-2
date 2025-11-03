@@ -33,9 +33,9 @@ def generate_comparison_figure(
 
     custom_cmap, custom_norm = get_custom_colormap()
 
-    if ground_truth.ndim == 3:
+    if ground_truth.ndim == 3:  # noqa: PLR2004
         ground_truth = torch.argmax(ground_truth, dim=0)
-    if prediction.ndim == 3:
+    if prediction.ndim == 3:  # noqa: PLR2004
         prediction = torch.argmax(prediction, dim=0)
 
     gt_np = ground_truth.cpu().numpy()

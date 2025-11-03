@@ -16,7 +16,7 @@ def build_model(
     encoder_weights: str | None = None,
     activation: str | None = None,
     *,
-    dynamic_img_size: bool = False
+    dynamic_img_size: bool = False,
 ) -> nn.Module:
     """Build a segmentation model from segmentation_models_pytorch."""
     try:

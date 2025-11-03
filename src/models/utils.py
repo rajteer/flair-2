@@ -12,11 +12,11 @@ def process_segmentation_tensor(tensor: torch.Tensor, num_classes: int) -> torch
         torch.Tensor: Processed tensor of shape (B, H, W) with dtype torch.long.
 
     """
-    if tensor.ndim == 4 and tensor.shape[1] == num_classes:
+    if tensor.ndim == 4 and tensor.shape[1] == num_classes:  # noqa: PLR2004
         tensor = torch.argmax(tensor, dim=1)
-    elif tensor.ndim == 4 and tensor.shape[1] == 1:
+    elif tensor.ndim == 4 and tensor.shape[1] == 1:  # noqa: PLR2004
         tensor = tensor.squeeze(1)
-    elif tensor.ndim != 3:
+    elif tensor.ndim != 3:  # noqa: PLR2004
         msg = f"Expected tensor to have 3 or 4 dimensions, but got {tensor.ndim}"
         raise ValueError(msg)
 
