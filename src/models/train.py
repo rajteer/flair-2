@@ -175,7 +175,16 @@ def train(
     losses_train: list[float] = []
     losses_val: list[float] = []
 
-    augmenter = FlairAugmentation(augmentation_config or {}) if apply_augmentations else None
+    augmenter = (
+        FlairAugmentation(
+            augmentation_config or {},
+            clamp=True,
+            clamp_min=0.0,
+            clamp_max=255.0,
+        )
+        if apply_augmentations
+        else None
+    )
     best_model_state = None
 
     for epoch in range(epochs):
