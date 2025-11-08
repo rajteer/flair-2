@@ -124,7 +124,29 @@ class TrainEvalPipeline:
                 "use_sentinel": use_sentinel,
                 "load_sentinel_masks": config["data"].get("load_sentinel_masks", False),
                 "load_sentinel_dates": config["data"].get("load_sentinel_dates", False),
+                "use_monthly_average": config["data"].get("use_monthly_average", False),
+                "remove_cloudy_snowy_timesteps": config["data"].get(
+                    "remove_cloudy_snowy_timesteps",
+                    False,
+                ),
+                "cloud_snow_cover_threshold": config["data"].get("cloud_snow_cover_threshold", 0.6),
+                "cloud_snow_prob_threshold": config["data"].get("cloud_snow_prob_threshold", 50),
             }
+
+            if use_sentinel:
+                mlflow.log_params(
+                    {
+                        "use_sentinel": use_sentinel,
+                        "load_sentinel_masks": sentinel_config["load_sentinel_masks"],
+                        "load_sentinel_dates": sentinel_config["load_sentinel_dates"],
+                        "use_monthly_average": sentinel_config["use_monthly_average"],
+                        "remove_cloudy_snowy_timesteps": sentinel_config[
+                            "remove_cloudy_snowy_timesteps"
+                        ],
+                        "cloud_snow_cover_threshold": sentinel_config["cloud_snow_cover_threshold"],
+                        "cloud_snow_prob_threshold": sentinel_config["cloud_snow_prob_threshold"],
+                    },
+                )
 
             test_dataset = FlairDataset(
                 image_dir=config["data"]["test"]["images"],

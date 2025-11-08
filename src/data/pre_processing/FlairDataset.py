@@ -1,5 +1,7 @@
 import json
+import logging
 import re
+from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from tqdm import tqdm
 
 MAX_ORIGINAL_CLASS = 12
 OTHER_CLASS = 13
+
+logger = logging.getLogger(__name__)
 
 
 class FlairDataset(Dataset):
@@ -29,10 +33,11 @@ class FlairDataset(Dataset):
         load_sentinel_masks: bool = False,
         load_sentinel_dates: bool = False,
         remove_cloudy_snowy_timesteps: bool = False,
+        use_monthly_average: bool = False,
         cloud_snow_cover_threshold: float = 0.6,
-        cloud_snow_prob_threshold: float = 0.5,
+        cloud_snow_prob_threshold: int = 50,
     ) -> None:
-        """Initialize the FLAIR-2 dataset with support for aerial and Sentinel-2 data.
+        """Initialize the FLAIR-2 dataset.
 
         Args:
             image_dir: Directory containing aerial image files (IMG_*.tif)
@@ -48,10 +53,13 @@ class FlairDataset(Dataset):
             load_sentinel_dates: Whether to load Sentinel product date strings
             remove_cloudy_snowy_timesteps: Whether to filter out timesteps with high
                 cloud/snow cover
+            use_monthly_average: Whether to compute monthly averages from cloudless
+                dates. Returns up to 12 monthly averaged images (one per month with data).
+                Requires load_sentinel_masks=True and load_sentinel_dates=True.
             cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1).
                 Default 0.6 (60%)
-            cloud_snow_prob_threshold: Minimum probability to consider a pixel as
-                cloudy/snowy (0-1). Default 0.5
+            cloud_snow_prob_threshold: Minimum probability value (0-100) to consider a
+                pixel as cloudy/snowy. Default 50 (50%)
 
         """
         self.image_dir = Path(image_dir)
@@ -65,8 +73,22 @@ class FlairDataset(Dataset):
         self.load_sentinel_masks = load_sentinel_masks
         self.load_sentinel_dates = load_sentinel_dates
         self.remove_cloudy_snowy_timesteps = remove_cloudy_snowy_timesteps
+        self.use_monthly_average = use_monthly_average
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
+
+        if self.use_monthly_average:
+            if not self.load_sentinel_masks or not self.load_sentinel_dates:
+                msg = (
+                    "use_monthly_average=True requires both "
+                    "load_sentinel_masks=True and load_sentinel_dates=True"
+                )
+                raise ValueError(msg)
+            if self.remove_cloudy_snowy_timesteps:
+                logger.warning(
+                    "Both use_monthly_average and remove_cloudy_snowy_timesteps are enabled. "
+                    "Monthly averaging will be applied after filtering cloudy/snowy timesteps.",
+                )
 
         self.features_dict = self._get_path_mapping(self.image_dir, "IMG_*.tif")
 
@@ -91,7 +113,7 @@ class FlairDataset(Dataset):
             centroids_path: Path to JSON file mapping image IDs to superpatch coordinates
 
         """
-        with Path.open(centroids_path, "r") as f:
+        with Path.open(centroids_path, mode="r", encoding="utf-8") as f:
             self.centroids_mapping = json.load(f)
 
         self.sentinel_data_dict = {}
@@ -115,7 +137,8 @@ class FlairDataset(Dataset):
 
             if self.load_sentinel_dates:
                 dates_path = sp_data_path.parent / sp_data_path.name.replace(
-                    "_data.npy", "_products.txt"
+                    "_data.npy",
+                    "_products.txt",
                 )
                 if dates_path.exists():
                     self.sentinel_dates_dict[domain_zone] = dates_path
@@ -307,6 +330,19 @@ class FlairDataset(Dataset):
                 sentinel_patch = sentinel_patch[valid_timesteps]
                 masks_patch = masks_patch[valid_timesteps]
 
+        if self.use_monthly_average:
+            product_names = self._load_sentinel_dates(domain_zone)
+
+            # If we filtered timesteps, update product names accordingly
+            if valid_timesteps is not None:
+                product_names = [product_names[i] for i in valid_timesteps]
+
+            sentinel_patch, masks_patch = self._compute_monthly_averages(
+                sentinel_patch,
+                masks_patch,
+                product_names,
+            )
+
         return (
             torch.from_numpy(sentinel_patch).float(),
             torch.from_numpy(masks_patch).float() if masks_patch is not None else None,
@@ -322,7 +358,8 @@ class FlairDataset(Dataset):
 
         Args:
             masks_patch: Cloud/snow masks array with shape (T, 2, H, W)
-                        where channel 0 is cloud probability, channel 1 is snow probability
+                        where channel 0 is cloud probability (0-100),
+                        channel 1 is snow probability (0-100)
 
         Returns:
             Array of timestep indices to keep
@@ -355,6 +392,125 @@ class FlairDataset(Dataset):
         parts = file_path.parts
         # Path structure: .../domain/zone/img/IMG_*.tif
         return f"{parts[-4]}/{parts[-3]}"
+
+    def _parse_sentinel_date(self, product_name: str) -> tuple[int, int]:
+        """Parse year and month from Sentinel-2 product name.
+
+        Args:
+            product_name: Sentinel-2 product name
+                (e.g., "S2B_MSIL2A_20210114T103309_...")
+
+        Returns:
+            Tuple of (year, month)
+
+        Raises:
+            ValueError: If date cannot be parsed from product name
+
+        """
+        match = re.search(r"_(\d{8})T", product_name)
+        if match is None:
+            msg = f"Could not extract date from product name: {product_name}"
+            raise ValueError(msg)
+
+        date_str = match.group(1)
+        year = int(date_str[:4])
+        month = int(date_str[4:6])
+        return year, month
+
+    def _load_sentinel_dates(self, domain_zone: str) -> list[str]:
+        """Load Sentinel-2 product dates for a domain/zone.
+
+        Args:
+            domain_zone: Domain and zone identifier (e.g., "D004_2021/Z14_AU")
+
+        Returns:
+            List of product name strings
+
+        Raises:
+            ValueError: If dates file not found
+
+        """
+        dates_path = self.sentinel_dates_dict.get(domain_zone)
+        if dates_path is None:
+            msg = f"Sentinel dates not found for {domain_zone}"
+            raise ValueError(msg)
+
+        with Path.open(dates_path, encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+
+    def _compute_monthly_averages(
+        self,
+        sentinel_patch: np.ndarray,
+        masks_patch: np.ndarray,
+        product_names: list[str],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute monthly averages from cloudless Sentinel-2 timesteps.
+
+        Following the FLAIR-2 paper strategy: compute monthly average using
+        cloudless dates. If no cloudless dates are available for a specific
+        month, that month is skipped (resulting in fewer than 12 images).
+
+        Args:
+            sentinel_patch: Sentinel-2 data with shape (T, C, H, W)
+            masks_patch: Cloud/snow masks with shape (T, 2, H, W)
+            product_names: List of Sentinel-2 product names (length T)
+
+        Returns:
+            Tuple of:
+            - Monthly averaged Sentinel-2 data with shape (M, C, H, W)
+              where M <= 12
+            - Monthly averaged masks with shape (M, 2, H, W)
+
+        """
+        monthly_timesteps = defaultdict(list)
+        for t, product_name in enumerate(product_names):
+            year, month = self._parse_sentinel_date(product_name)
+            monthly_timesteps[(year, month)].append(t)
+
+        monthly_cloudless = {}
+
+        for (year, month), timesteps in monthly_timesteps.items():
+            cloudless_timesteps = []
+
+            for t in timesteps:
+                # Check if this timestep is cloudless
+                max_prob = np.maximum(
+                    masks_patch[t, 0, :, :],
+                    masks_patch[t, 1, :, :],
+                )
+                total_pixels = masks_patch.shape[2] * masks_patch.shape[3]
+                covered_pixels = np.count_nonzero(
+                    max_prob >= self.cloud_snow_prob_threshold,
+                )
+                coverage_ratio = covered_pixels / total_pixels
+
+                if coverage_ratio < self.cloud_snow_cover_threshold:
+                    cloudless_timesteps.append(t)
+
+            # Only include months with at least one cloudless timestep
+            if cloudless_timesteps:
+                monthly_cloudless[(year, month)] = cloudless_timesteps
+
+        # Compute monthly averages
+        sorted_months = sorted(monthly_cloudless.keys())
+        monthly_data_list = []
+        monthly_masks_list = []
+
+        for year_month in sorted_months:
+            timesteps = monthly_cloudless[year_month]
+
+            # Average Sentinel data for this month
+            month_data = np.mean(sentinel_patch[timesteps], axis=0)
+            monthly_data_list.append(month_data)
+
+            # Average masks for this month
+            month_masks = np.mean(masks_patch[timesteps], axis=0)
+            monthly_masks_list.append(month_masks)
+
+        monthly_data = np.stack(monthly_data_list, axis=0)  # Shape: (M, C, H, W)
+        monthly_masks = np.stack(monthly_masks_list, axis=0)  # Shape: (M, 2, H, W)
+
+        return monthly_data, monthly_masks
 
     def get_class_counts(self) -> torch.Tensor:
         """Calculate the distribution of classes in the dataset efficiently.

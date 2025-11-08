@@ -29,10 +29,11 @@ data:
   
   # Sentinel-2 filtering
   # Remove timesteps with >60% cloud/snow cover (probability threshold 0.5)
-  filter_clouds: false
+  filter_clouds_snow: false
   sentinel_patch_size: 40
-  cloud_cover_threshold: 0.6  # Remove if >60% covered
-  cloud_prob_threshold: 0.5   # Consider pixel cloudy if prob >= 0.5  
+  cloud_snow_cover_threshold: 0.6  # Remove if >60% covered
+  cloud_prob_threshold: 50   # Consider pixel cloudy if prob >= 50
+  use_monthly_average: true 
 
 
   data_augmentation:
