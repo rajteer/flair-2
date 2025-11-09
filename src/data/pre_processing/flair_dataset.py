@@ -1,7 +1,6 @@
 import json
 import logging
 import re
-from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,6 +10,14 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from .sentinel_utils import (
+    compute_monthly_averages,
+    extract_domain_zone,
+    extract_sentinel_patch,
+    filter_cloudy_snowy_timesteps,
+    load_sentinel_dates,
+)
+
 MAX_ORIGINAL_CLASS = 12
 OTHER_CLASS = 13
 
@@ -18,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class FlairDataset(Dataset):
+    """FLAIR-2 dataset for aerial image semantic segmentation with optional Sentinel-2 fusion.
+
+    This is the main dataset class for loading aerial imagery along with optional
+    Sentinel-2 satellite data for multi-modal fusion experiments.
+    """
+
     def __init__(
         self,
         image_dir: str,
@@ -130,7 +143,7 @@ class FlairDataset(Dataset):
 
             if self.load_sentinel_masks:
                 masks_path = sp_data_path.parent / sp_data_path.name.replace(
-                    "_data.npy", "_masks.npy"
+                    "_data.npy", "_masks.npy",
                 )
                 if masks_path.exists():
                     self.sentinel_masks_dict[domain_zone] = masks_path
@@ -184,22 +197,25 @@ class FlairDataset(Dataset):
 
         Returns:
             Tuple containing:
-                - aerial_image: Tensor of aerial image (C, H, W)
-                - mask: Tensor of segmentation mask (H, W) [if available]
-                - sentinel_data: Tensor of Sentinel-2 data (T, C, H, W) [if use_sentinel=True]
-                - sentinel_masks: Tensor of cloud/snow masks (T, 2, H, W) [if load_sentinel_masks=True]
+                - aerial_image: Tensor of shape (C, H, W) at aerial resolution
+                - mask: Tensor of shape (H, W) at aerial resolution
+                - sentinel_data (optional): Tensor of shape (T, C, H, W)
+                  if use_sentinel=True
+                - sentinel_masks (optional): Tensor of shape (T, 2, H, W)
+                  if load_sentinel_masks=True
                 - sample_id: String ID of the sample
 
         Raises:
             IndexError: If idx is out of range
 
         """
-        if idx >= len(self):
+        if abs(idx) >= len(self):
             msg = f"Index {idx} out of range for dataset of size {len(self)}"
             raise IndexError(msg)
 
         sample_id = self.ids[idx]
         feature_path = self.features_dict[sample_id]
+        outputs = []
 
         aerial_img = tifffile.imread(feature_path)
         aerial_img = torch.from_numpy(aerial_img).float()
@@ -213,7 +229,7 @@ class FlairDataset(Dataset):
         if self.image_transform is not None:
             aerial_img = self.image_transform(aerial_img)
 
-        outputs = [aerial_img]
+        outputs.append(aerial_img)
 
         if self.mask_dir:
             label_path = self.labels_dict[sample_id]
@@ -250,7 +266,7 @@ class FlairDataset(Dataset):
             - Valid timestep indices array or None
 
         """
-        domain_zone = self._extract_domain_zone(feature_path)
+        domain_zone = extract_domain_zone(feature_path)
 
         img_filename = feature_path.name
         centroid_x, centroid_y = self.centroids_mapping[img_filename]
@@ -258,39 +274,12 @@ class FlairDataset(Dataset):
         sp_data_path = self.sentinel_data_dict[domain_zone]
         sp_data = np.load(sp_data_path)  # Shape: (T, C, H, W)
 
-        half_size = self.sentinel_patch_size // 2
-
-        y_start = max(0, centroid_y - half_size)
-        y_end = min(sp_data.shape[2], centroid_y + half_size)
-        x_start = max(0, centroid_x - half_size)
-        x_end = min(sp_data.shape[3], centroid_x + half_size)
-
-        sentinel_patch = sp_data[:, :, y_start:y_end, x_start:x_end]
-
-        if (
-            sentinel_patch.shape[2] != self.sentinel_patch_size
-            or sentinel_patch.shape[3] != self.sentinel_patch_size
-        ):
-            pad_y = self.sentinel_patch_size - sentinel_patch.shape[2]
-            pad_x = self.sentinel_patch_size - sentinel_patch.shape[3]
-
-            pad_top = (centroid_y - half_size) < 0
-            pad_bottom = (centroid_y + half_size) > sp_data.shape[2]
-            pad_left = (centroid_x - half_size) < 0
-            pad_right = (centroid_x + half_size) > sp_data.shape[3]
-
-            padding = [
-                pad_x if pad_left else 0,
-                pad_x if pad_right else 0,
-                pad_y if pad_top else 0,
-                pad_y if pad_bottom else 0,
-            ]
-
-            sentinel_patch = np.pad(
-                sentinel_patch,
-                ((0, 0), (0, 0), (padding[2], padding[3]), (padding[0], padding[1])),
-                mode="reflect",
-            )
+        sentinel_patch = extract_sentinel_patch(
+            sp_data,
+            centroid_x,
+            centroid_y,
+            self.sentinel_patch_size,
+        )
 
         masks_patch = None
         valid_timesteps = None
@@ -303,44 +292,42 @@ class FlairDataset(Dataset):
 
             sp_masks = np.load(sp_masks_path)  # Shape: (T, 2, H, W)
 
-            y_start = max(0, centroid_y - half_size)
-            y_end = min(sp_masks.shape[2], centroid_y + half_size)
-            x_start = max(0, centroid_x - half_size)
-            x_end = min(sp_masks.shape[3], centroid_x + half_size)
-
-            masks_patch = sp_masks[:, :, y_start:y_end, x_start:x_end]
-
-            if (
-                masks_patch.shape[2] != self.sentinel_patch_size
-                or masks_patch.shape[3] != self.sentinel_patch_size
-            ):
-                masks_patch = np.pad(
-                    masks_patch,
-                    (
-                        (0, 0),
-                        (0, 0),
-                        (padding[2], padding[3]),
-                        (padding[0], padding[1]),
-                    ),
-                    mode="reflect",
-                )
+            masks_patch = extract_sentinel_patch(
+                sp_masks,
+                centroid_x,
+                centroid_y,
+                self.sentinel_patch_size,
+            )
 
             if self.remove_cloudy_snowy_timesteps:
-                valid_timesteps = self._filter_cloudy_snowy_timesteps(masks_patch)
-                sentinel_patch = sentinel_patch[valid_timesteps]
-                masks_patch = masks_patch[valid_timesteps]
+                valid_timesteps = filter_cloudy_snowy_timesteps(
+                    masks_patch,
+                    self.cloud_snow_cover_threshold,
+                    self.cloud_snow_prob_threshold,
+                )
+                if len(valid_timesteps) == 0:
+                    logger.warning(
+                        "No valid timesteps found for %s in %s after cloud/snow "
+                        "filtering. Using all timesteps instead.",
+                        feature_path.name,
+                        domain_zone,
+                    )
+                else:
+                    sentinel_patch = sentinel_patch[valid_timesteps]
+                    masks_patch = masks_patch[valid_timesteps]
 
         if self.use_monthly_average:
-            product_names = self._load_sentinel_dates(domain_zone)
+            product_names = load_sentinel_dates(self.sentinel_dates_dict[domain_zone])
 
-            # If we filtered timesteps, update product names accordingly
             if valid_timesteps is not None:
                 product_names = [product_names[i] for i in valid_timesteps]
 
-            sentinel_patch, masks_patch = self._compute_monthly_averages(
+            sentinel_patch, masks_patch = compute_monthly_averages(
                 sentinel_patch,
                 masks_patch,
                 product_names,
+                self.cloud_snow_cover_threshold,
+                self.cloud_snow_prob_threshold,
             )
 
         return (
@@ -348,169 +335,6 @@ class FlairDataset(Dataset):
             torch.from_numpy(masks_patch).float() if masks_patch is not None else None,
             valid_timesteps,
         )
-
-    def _filter_cloudy_snowy_timesteps(self, masks_patch: np.ndarray) -> np.ndarray:
-        """Filter timesteps with high cloud or snow cover.
-
-        Implementation follows FLAIR-2 paper:
-        "We remove satellite images with a snow or cloud cover of over 60%
-        according to the meta-data (with a probability threshold of 0.5)"
-
-        Args:
-            masks_patch: Cloud/snow masks array with shape (T, 2, H, W)
-                        where channel 0 is cloud probability (0-100),
-                        channel 1 is snow probability (0-100)
-
-        Returns:
-            Array of timestep indices to keep
-
-        """
-        num_timesteps = masks_patch.shape[0]
-        total_pixels = masks_patch.shape[2] * masks_patch.shape[3]
-        valid_timesteps = []
-
-        for t in range(num_timesteps):
-            max_prob = np.maximum(masks_patch[t, 0, :, :], masks_patch[t, 1, :, :])
-            covered_pixels = np.count_nonzero(max_prob >= self.cloud_snow_prob_threshold)
-            coverage_ratio = covered_pixels / total_pixels
-
-            if coverage_ratio < self.cloud_snow_cover_threshold:
-                valid_timesteps.append(t)
-
-        return np.array(valid_timesteps, dtype=np.int64)
-
-    def _extract_domain_zone(self, file_path: Path) -> str:
-        """Extract domain and zone from file path.
-
-        Args:
-            file_path: Path to the file
-
-        Returns:
-            String in format "DOMAIN/ZONE" (e.g., "D004_2021/Z14_AU")
-
-        """
-        parts = file_path.parts
-        # Path structure: .../domain/zone/img/IMG_*.tif
-        return f"{parts[-4]}/{parts[-3]}"
-
-    def _parse_sentinel_date(self, product_name: str) -> tuple[int, int]:
-        """Parse year and month from Sentinel-2 product name.
-
-        Args:
-            product_name: Sentinel-2 product name
-                (e.g., "S2B_MSIL2A_20210114T103309_...")
-
-        Returns:
-            Tuple of (year, month)
-
-        Raises:
-            ValueError: If date cannot be parsed from product name
-
-        """
-        match = re.search(r"_(\d{8})T", product_name)
-        if match is None:
-            msg = f"Could not extract date from product name: {product_name}"
-            raise ValueError(msg)
-
-        date_str = match.group(1)
-        year = int(date_str[:4])
-        month = int(date_str[4:6])
-        return year, month
-
-    def _load_sentinel_dates(self, domain_zone: str) -> list[str]:
-        """Load Sentinel-2 product dates for a domain/zone.
-
-        Args:
-            domain_zone: Domain and zone identifier (e.g., "D004_2021/Z14_AU")
-
-        Returns:
-            List of product name strings
-
-        Raises:
-            ValueError: If dates file not found
-
-        """
-        dates_path = self.sentinel_dates_dict.get(domain_zone)
-        if dates_path is None:
-            msg = f"Sentinel dates not found for {domain_zone}"
-            raise ValueError(msg)
-
-        with Path.open(dates_path, encoding="utf-8") as f:
-            return [line.strip() for line in f if line.strip()]
-
-    def _compute_monthly_averages(
-        self,
-        sentinel_patch: np.ndarray,
-        masks_patch: np.ndarray,
-        product_names: list[str],
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute monthly averages from cloudless Sentinel-2 timesteps.
-
-        Following the FLAIR-2 paper strategy: compute monthly average using
-        cloudless dates. If no cloudless dates are available for a specific
-        month, that month is skipped (resulting in fewer than 12 images).
-
-        Args:
-            sentinel_patch: Sentinel-2 data with shape (T, C, H, W)
-            masks_patch: Cloud/snow masks with shape (T, 2, H, W)
-            product_names: List of Sentinel-2 product names (length T)
-
-        Returns:
-            Tuple of:
-            - Monthly averaged Sentinel-2 data with shape (M, C, H, W)
-              where M <= 12
-            - Monthly averaged masks with shape (M, 2, H, W)
-
-        """
-        monthly_timesteps = defaultdict(list)
-        for t, product_name in enumerate(product_names):
-            year, month = self._parse_sentinel_date(product_name)
-            monthly_timesteps[(year, month)].append(t)
-
-        monthly_cloudless = {}
-
-        for (year, month), timesteps in monthly_timesteps.items():
-            cloudless_timesteps = []
-
-            for t in timesteps:
-                # Check if this timestep is cloudless
-                max_prob = np.maximum(
-                    masks_patch[t, 0, :, :],
-                    masks_patch[t, 1, :, :],
-                )
-                total_pixels = masks_patch.shape[2] * masks_patch.shape[3]
-                covered_pixels = np.count_nonzero(
-                    max_prob >= self.cloud_snow_prob_threshold,
-                )
-                coverage_ratio = covered_pixels / total_pixels
-
-                if coverage_ratio < self.cloud_snow_cover_threshold:
-                    cloudless_timesteps.append(t)
-
-            # Only include months with at least one cloudless timestep
-            if cloudless_timesteps:
-                monthly_cloudless[(year, month)] = cloudless_timesteps
-
-        # Compute monthly averages
-        sorted_months = sorted(monthly_cloudless.keys())
-        monthly_data_list = []
-        monthly_masks_list = []
-
-        for year_month in sorted_months:
-            timesteps = monthly_cloudless[year_month]
-
-            # Average Sentinel data for this month
-            month_data = np.mean(sentinel_patch[timesteps], axis=0)
-            monthly_data_list.append(month_data)
-
-            # Average masks for this month
-            month_masks = np.mean(masks_patch[timesteps], axis=0)
-            monthly_masks_list.append(month_masks)
-
-        monthly_data = np.stack(monthly_data_list, axis=0)  # Shape: (M, C, H, W)
-        monthly_masks = np.stack(monthly_masks_list, axis=0)  # Shape: (M, 2, H, W)
-
-        return monthly_data, monthly_masks
 
     def get_class_counts(self) -> torch.Tensor:
         """Calculate the distribution of classes in the dataset efficiently.

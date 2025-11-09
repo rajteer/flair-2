@@ -13,7 +13,7 @@ from mlflow.exceptions import MlflowException, RestException
 from mlflow.models.signature import ModelSignature
 from mlflow.types.schema import Schema, TensorSpec
 
-from src.data.pre_processing.FlairDataset import FlairDataset
+from src.data.pre_processing.flair_dataset import FlairDataset
 from src.models.utils import process_segmentation_tensor
 from src.visualization.plot import generate_comparison_figure, plot_confusion_matrix
 from src.visualization.utils import get_custom_colormap

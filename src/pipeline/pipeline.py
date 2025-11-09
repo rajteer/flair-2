@@ -12,7 +12,7 @@ import mlflow
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.pre_processing.FlairDataset import FlairDataset
+from src.data.pre_processing.flair_dataset import FlairDataset
 from src.models.model_builder import (
     build_loss_function,
     build_lr_scheduler,
