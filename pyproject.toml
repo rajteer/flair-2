@@ -17,6 +17,8 @@ dependencies = [
     "torchmetrics>=1.8.2",
     "tqdm>=4.67.1",
     "transformers>=4.57.0",
+    "utae-paps @ git+https://github.com/rajteer/utae-paps.git@604be2cd94f211314df24e0bff9a4307704256fc"
+
 ]
 authors = [
     {name = "Paweł Rajter"}
@@ -24,7 +26,10 @@ authors = [
 license = {text = "MIT"}
 
 [project.scripts]
-flair-train = "src.pipeline.pipeline:main"
+flair-train = "pipeline.pipeline:main"
+
+[tool.uv.extra-build-dependencies]
+torch-scatter = ["torch"]
 
 [dependency-groups]
 dev = [
@@ -58,3 +63,16 @@ ignore = [
     "ISC001",  # Conflicts with formatter ruff
     "PLR0913", # Too many arguments
 ]
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

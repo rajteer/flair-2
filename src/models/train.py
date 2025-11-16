@@ -15,30 +15,48 @@ from src.utils.model_stats import compute_model_complexity
 
 logger = logging.getLogger(__name__)
 
+TEMPORAL_MODEL_NDIM = 5
+
+BATCH_INDEX_INPUTS = 0
+BATCH_INDEX_TARGETS = 1
+BATCH_INDEX_PAD_MASK = 2
+BATCH_INDEX_SAMPLE_IDS = 3
+BATCH_INDEX_POSITIONS = 4
+
 
 def _log_model_description(
     model: torch.nn.Module,
     device: torch.device,
     sample_input_shape: tuple[int, ...],
+    sample_inputs: torch.Tensor | None = None,
+    batch_positions: torch.Tensor | None = None,
 ) -> None:
-    """Create and log a model summary and complexity metrics for the given input shape."""
+    """Create and log model stats."""
     model_info = ""
 
+    summary_kwargs: dict[str, Any] = {
+        "model": model,
+        "device": str(device),
+        "verbose": 0,
+        "col_names": [
+            "input_size",
+            "output_size",
+            "num_params",
+            "kernel_size",
+            "mult_adds",
+        ],
+        "row_settings": ["var_names"],
+    }
+
+    if sample_inputs is not None:
+        summary_kwargs["input_data"] = sample_inputs
+        if sample_inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+            summary_kwargs["batch_positions"] = batch_positions
+    else:
+        summary_kwargs["input_size"] = sample_input_shape
+
     with io.StringIO() as buf:
-        model_summary = summary(
-            model,
-            input_size=sample_input_shape,
-            device=str(device),
-            verbose=0,
-            col_names=[
-                "input_size",
-                "output_size",
-                "num_params",
-                "kernel_size",
-                "mult_adds",
-            ],
-            row_settings=["var_names"],
-        )
+        model_summary = summary(**summary_kwargs)
         print(model_summary, file=buf)
         model_info = buf.getvalue()
 
@@ -53,20 +71,25 @@ def _log_model_description(
     mlflow.log_artifact(tmp_path, "model_architecture")
     Path(tmp_path).unlink()
 
-    complexity = compute_model_complexity(
-        model=model,
-        input_size=sample_input_shape,
-    )
-    for k, v in complexity.items():
-        mlflow.log_metric(k, float(v))
+    if len(sample_input_shape) != TEMPORAL_MODEL_NDIM:
+        complexity = compute_model_complexity(
+            model=model,
+            input_size=sample_input_shape,
+        )
+        for k, v in complexity.items():
+            mlflow.log_metric(k, float(v))
 
 
-def _get_sample_input_shape(
+def _get_sample_batch(
     loader: torch.utils.data.DataLoader,
-) -> tuple[int, ...]:
-    """Return the shape of the first batch's input tensor as a tuple of ints."""
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Return the first batch's inputs and optional temporal positions."""
     batch = next(iter(loader))
-    return tuple(int(x) for x in batch[0].shape)
+    inputs = batch[BATCH_INDEX_INPUTS]
+    batch_positions = (
+        batch[BATCH_INDEX_POSITIONS] if len(batch) > BATCH_INDEX_POSITIONS else None
+    )
+    return inputs, batch_positions
 
 
 def _train_epoch(
@@ -81,15 +104,26 @@ def _train_epoch(
     model.train()
     total_loss = 0.0
 
-    for x_batch, y_batch, *_ in loader:
-        x = x_batch.to(device)
-        y = y_batch.to(device)
+    for batch_data in loader:
+        x = batch_data[BATCH_INDEX_INPUTS].to(device)
+        y = batch_data[BATCH_INDEX_TARGETS].to(device)
+
+        batch_positions = (
+            batch_data[BATCH_INDEX_POSITIONS].to(device)
+            if len(batch_data) > BATCH_INDEX_POSITIONS
+            else None
+        )
 
         if augmenter is not None:
             x, y = augmenter(x, y)
 
         optimizer.zero_grad()
-        outputs = model(x)
+
+        if x.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+            outputs = model(x, batch_positions=batch_positions)
+        else:
+            outputs = model(x)
+
         loss = criterion(outputs, y)
         loss.backward()
         optimizer.step()
@@ -108,10 +142,21 @@ def _validate_epoch(
     model.eval()
     val_loss = 0.0
     with torch.no_grad():
-        for x_batch, y_batch, *_ in loader:
-            x = x_batch.to(device)
-            y = y_batch.to(device)
-            outputs = model(x)
+        for batch_data in loader:
+            x = batch_data[BATCH_INDEX_INPUTS].to(device)
+            y = batch_data[BATCH_INDEX_TARGETS].to(device)
+
+            batch_positions = (
+                batch_data[BATCH_INDEX_POSITIONS].to(device)
+                if len(batch_data) > BATCH_INDEX_POSITIONS
+                else None
+            )
+
+            if x.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+                outputs = model(x, batch_positions=batch_positions)
+            else:
+                outputs = model(x)
+
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
     return val_loss / len(loader)
@@ -165,10 +210,17 @@ def train(
     """
     model.to(device)
 
-    sample_input_shape = _get_sample_input_shape(train_loader)
+    sample_inputs, sample_batch_positions = _get_sample_batch(train_loader)
+    sample_input_shape = tuple(int(x) for x in sample_inputs.shape)
 
     if log_evaluation_metrics:
-        _log_model_description(model, device, sample_input_shape)
+        _log_model_description(
+            model,
+            device,
+            sample_input_shape,
+            sample_inputs=sample_inputs,
+            batch_positions=sample_batch_positions,
+        )
 
     best_val_loss = float("inf")
     no_improve = 0

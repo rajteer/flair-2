@@ -1,4 +1,4 @@
-"""Training and evaluation pipeline."""
+"""Training and evaluation pipeline for Sentinel-2 only experiments."""
 
 import argparse
 import json
@@ -12,8 +12,8 @@ import mlflow
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataset_utils import pad_collate_flair
-from src.data.pre_processing.flair_dataset import FlairDataset
+from src.data.dataset_utils import pad_collate_sentinel
+from src.data.pre_processing.flair_sentinel_dataset import FlairSentinelDataset
 from src.models.model_builder import (
     build_loss_function,
     build_lr_scheduler,
@@ -31,19 +31,23 @@ from src.visualization.utils import class_name_mapping
 logger = logging.getLogger(__name__)
 
 
-class TrainEvalPipeline:
-    """Pipeline for training and evaluation."""
+class SentinelTrainEvalPipeline:
+    """Pipeline for Sentinel-2 only training and evaluation.
+
+    This pipeline is specifically designed for temporal Sentinel-2 experiments,
+    handling monthly time series data and temporal model architectures.
+    """
 
     def __init__(self, run_name: str | None = None, logs_dir: str | None = None) -> None:
-        """Initialize the TrainEvalPipeline class and set up logging configurations."""
+        """Initialize the Sentinel pipeline and set up logging configurations."""
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", run_name).strip("_") if run_name else ""
         run_suffix = f"_{safe_name}" if safe_name else ""
         logs_path: Path = Path(logs_dir).expanduser().resolve() if logs_dir else Path.cwd()
-        self.log_file = logs_path / f"pipeline_{timestamp}{run_suffix}.log"
+        self.log_file = logs_path / f"sentinel_pipeline_{timestamp}{run_suffix}.log"
 
     def run(self, config: dict[str, Any], *, no_stdout_logs: bool = False) -> None:
-        """Execute the training and evaluation pipeline.
+        """Execute the Sentinel-2 training and evaluation pipeline.
 
         Args:
             config: Configuration dictionary for the pipeline.
@@ -69,7 +73,7 @@ class TrainEvalPipeline:
         deterministic = bool(exp_cfg.get("deterministic", True))
         seed_everything(seed=seed, deterministic=deterministic)
 
-        logger.info("Starting train-evaluation pipeline.")
+        logger.info("Starting Sentinel-2 train-evaluation pipeline.")
 
         with mlflow.start_run(run_name=config["mlflow"]["run_name"]):
             mlflow.log_dict(config, artifact_file="config_resolved.json")
@@ -86,7 +90,7 @@ class TrainEvalPipeline:
                     "model_type": config["model"]["model_type"],
                     "encoder_name": config["model"]["encoder_name"],
                     "encoder_weights": config["model"]["encoder_weights"],
-                    "in_channels": len(config["data"]["selected_channels"]),
+                    "in_channels": config["model"]["in_channels"],
                     "n_classes": config["data"]["num_classes"],
                 },
             )
@@ -109,8 +113,16 @@ class TrainEvalPipeline:
             mlflow.log_params(
                 {
                     "batch_size": config["data"]["batch_size"],
-                    "selected_channels": config["data"]["selected_channels"],
-                    "with_augmentation": config["data"]["data_augmentation"]["apply_augmentations"],
+                    "sentinel_patch_size": config["data"]["sentinel_patch_size"],
+                    "use_monthly_average": config["data"].get("use_monthly_average", True),
+                    "cloud_snow_cover_threshold": config["data"].get(
+                        "cloud_snow_cover_threshold",
+                        0.6,
+                    ),
+                    "cloud_snow_prob_threshold": config["data"].get(
+                        "cloud_snow_prob_threshold",
+                        50,
+                    ),
                 },
             )
 
@@ -118,58 +130,40 @@ class TrainEvalPipeline:
                 mlflow.set_tag("note", note)
 
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
+            mlflow.set_tag("data_type", "sentinel_2_only")
 
-            use_sentinel = config["data"].get("use_sentinel", False)
-            sentinel_config = {
-                "centroids_path": config["data"].get("centroids_path") if use_sentinel else None,
-                "use_sentinel": use_sentinel,
-                "use_monthly_average": config["data"].get("use_monthly_average", False),
-                "remove_cloudy_snowy_timesteps": config["data"].get(
-                    "remove_cloudy_snowy_timesteps",
-                    False,
-                ),
-                "cloud_snow_cover_threshold": config["data"].get("cloud_snow_cover_threshold", 0.6),
-                "cloud_snow_prob_threshold": config["data"].get("cloud_snow_prob_threshold", 50),
-            }
-
-            if use_sentinel:
-                mlflow.log_params(
-                    {
-                        "use_sentinel": use_sentinel,
-                        "use_monthly_average": sentinel_config["use_monthly_average"],
-                        "remove_cloudy_snowy_timesteps": sentinel_config[
-                            "remove_cloudy_snowy_timesteps"
-                        ],
-                        "cloud_snow_cover_threshold": sentinel_config["cloud_snow_cover_threshold"],
-                        "cloud_snow_prob_threshold": sentinel_config["cloud_snow_prob_threshold"],
-                    },
-                )
-
-            test_dataset = FlairDataset(
-                image_dir=config["data"]["test"]["images"],
+            # Create Sentinel-2 datasets
+            test_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["test"]["masks"],
-                sentinel_dir=config["data"]["test"].get("sentinel") if use_sentinel else None,
+                sentinel_dir=config["data"]["test"]["sentinel"],
+                centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
-                selected_channels=config["data"]["selected_channels"],
-                **sentinel_config,
+                sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                use_monthly_average=config["data"].get("use_monthly_average", True),
+                cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
+                cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
             )
 
-            train_dataset = FlairDataset(
-                image_dir=config["data"]["train"]["images"],
+            train_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["train"]["masks"],
-                sentinel_dir=config["data"]["train"].get("sentinel") if use_sentinel else None,
+                sentinel_dir=config["data"]["train"]["sentinel"],
+                centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
-                selected_channels=config["data"]["selected_channels"],
-                **sentinel_config,
+                sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                use_monthly_average=config["data"].get("use_monthly_average", True),
+                cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
+                cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
             )
 
-            val_dataset = FlairDataset(
-                image_dir=config["data"]["val"]["images"],
+            val_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["val"]["masks"],
-                sentinel_dir=config["data"]["val"].get("sentinel") if use_sentinel else None,
+                sentinel_dir=config["data"]["val"]["sentinel"],
+                centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
-                selected_channels=config["data"]["selected_channels"],
-                **sentinel_config,
+                sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                use_monthly_average=config["data"].get("use_monthly_average", True),
+                cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
+                cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
             )
 
             generator = create_generator(seed)
@@ -183,7 +177,7 @@ class TrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 generator=generator,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_flair if use_sentinel else None,
+                collate_fn=pad_collate_sentinel,
             )
 
             val_loader = DataLoader(
@@ -193,7 +187,7 @@ class TrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_flair if use_sentinel else None,
+                collate_fn=pad_collate_sentinel,
             )
 
             test_loader = DataLoader(
@@ -203,7 +197,7 @@ class TrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_flair if use_sentinel else None,
+                collate_fn=pad_collate_sentinel,
             )
 
             criterion = build_loss_function(
@@ -221,14 +215,14 @@ class TrainEvalPipeline:
                 "Using device: %s",
                 torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU",
             )
-
             model = build_model(
                 model_type=config["model"]["model_type"],
                 encoder_name=config["model"]["encoder_name"],
                 encoder_weights=config["model"]["encoder_weights"],
-                in_channels=len(config["data"]["selected_channels"]),
+                in_channels=config["model"]["in_channels"],
                 n_classes=config["data"]["num_classes"],
                 dynamic_img_size=config["model"].get("dynamic_img_size", False),
+                model_config=config["model"],
             )
 
             model.to(device)
@@ -246,7 +240,7 @@ class TrainEvalPipeline:
                 scheduler_config=config["training"].get("lr_scheduler"),
             )
 
-            logger.info("Starting training model %s", config["model"]["model_type"])
+            logger.info("Starting training Sentinel-2 model %s", config["model"]["model_type"])
 
             train(
                 model=model,
@@ -256,11 +250,8 @@ class TrainEvalPipeline:
                 optimizer=optimizer,
                 scheduler=lr_scheduler,
                 device=device,
-                apply_augmentations=config["data"]["data_augmentation"]["apply_augmentations"],
-                augmentation_config=config["data"]["data_augmentation"]["augmentations"],
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
-                num_classes=config["data"]["num_classes"],
             )
 
             logger.info("Training finished. Evaluating the model...")
@@ -275,8 +266,7 @@ class TrainEvalPipeline:
                     "Unsupported visualization.language '%s'. No class name mapping will be used.",
                     labels_language,
                 )
-
-            evaluate(
+            test_metrics = evaluate(
                 model=model,
                 device=device,
                 data_loader=test_loader,
@@ -288,7 +278,15 @@ class TrainEvalPipeline:
                 visualization_labels=visualization_labels,
             )
 
-            mlflow.log_artifact(str(self.log_file), artifact_path="logs")
+            logger.info("Test Metrics:")
+            for metric_name, metric_value in test_metrics.items():
+                logger.info("  %s: %.4f", metric_name, metric_value)
+
+            mlflow.log_metrics(
+                {f"test_{k}": v for k, v in test_metrics.items()},
+            )
+
+            logger.info("Sentinel-2 pipeline completed successfully.")
 
 
 def add_train_eval_arguments(
@@ -346,7 +344,9 @@ def run_train_eval(args: argparse.Namespace) -> None:
         raise ValueError(msg)
     config = read_yaml(config_file)
 
-    pipeline = TrainEvalPipeline(run_name=config["mlflow"]["run_name"], logs_dir=args.logs_dir)
+    pipeline = SentinelTrainEvalPipeline(
+        run_name=config["mlflow"]["run_name"], logs_dir=args.logs_dir
+    )
     pipeline.run(config, no_stdout_logs=args.no_stdout_logs)
 
 

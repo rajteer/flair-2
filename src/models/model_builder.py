@@ -1,6 +1,7 @@
 from typing import Any
 
 import segmentation_models_pytorch as smp
+from backbones.utae import UTAE
 from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
@@ -17,8 +18,50 @@ def build_model(
     activation: str | None = None,
     *,
     dynamic_img_size: bool = False,
+    model_config: dict[str, Any] | None = None,
 ) -> nn.Module:
-    """Build a segmentation model from segmentation_models_pytorch."""
+    """Build a segmentation model.
+
+    Supports both SMP models and temporal models like U-TAE.
+
+    Args:
+        model_type: Type of model (e.g., 'Unet', 'FPN', 'UTAE')
+        encoder_name: Name of encoder backbone
+        in_channels: Number of input channels
+        n_classes: Number of output classes
+        encoder_weights: Pre-trained weights for encoder
+        activation: Activation function for output
+        dynamic_img_size: Whether to support dynamic image sizes
+        model_config: Additional model-specific configuration parameters
+
+    Returns:
+        Initialized model
+
+    """
+    if model_type.upper() == "UTAE":
+        utae_config = model_config or {}
+
+        utae_params = {
+            "input_dim": in_channels,
+            "encoder_widths": utae_config.get("encoder_widths", [64, 64, 64, 128]),
+            "decoder_widths": utae_config.get("decoder_widths", [32, 32, 64, 128]),
+            "out_conv": utae_config.get("out_conv", [32, n_classes]),
+            "str_conv_k": utae_config.get("str_conv_k", 4),
+            "str_conv_s": utae_config.get("str_conv_s", 2),
+            "str_conv_p": utae_config.get("str_conv_p", 1),
+            "agg_mode": utae_config.get("agg_mode", "att_group"),
+            "encoder_norm": utae_config.get("encoder_norm", "group"),
+            "n_head": utae_config.get("n_head", 16),
+            "d_model": utae_config.get("d_model", 256),
+            "d_k": utae_config.get("d_k", 4),
+            "encoder": utae_config.get("encoder", False),
+            "return_maps": utae_config.get("return_maps", False),
+            "pad_value": utae_config.get("pad_value", 0),
+            "padding_mode": utae_config.get("padding_mode", "reflect"),
+        }
+
+        return UTAE(**utae_params)
+
     try:
         model_class = getattr(smp, model_type)
     except AttributeError as err:
@@ -99,7 +142,6 @@ def build_loss_function(
     if kwargs is None:
         kwargs = {}
 
-    # Check for custom loss functions first
     if loss_type == "CombinedDiceFocalLoss":
         return CombinedDiceFocalLoss(**kwargs)
 

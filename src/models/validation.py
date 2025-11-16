@@ -21,6 +21,13 @@ from src.utils.mlflow_utils import (
 
 logger = logging.getLogger(__name__)
 
+TEMPORAL_MODEL_NDIM = 5
+
+BATCH_INDEX_INPUTS = 0
+BATCH_INDEX_TARGETS = 1
+BATCH_INDEX_SAMPLE_IDS = 3
+BATCH_INDEX_POSITIONS = 4
+
 
 def calculate_iou_scores(
     conf_matrix: torch.Tensor,
@@ -109,8 +116,18 @@ def _perform_warmup(
         for warmup_count, batch in enumerate(data_loader):
             if warmup_count >= warmup_runs:
                 break
-            inputs = batch[0].to(device)
-            _ = model(inputs)
+            inputs = batch[BATCH_INDEX_INPUTS].to(device)
+            batch_positions = (
+                batch[BATCH_INDEX_POSITIONS].to(device)
+                if len(batch) > BATCH_INDEX_POSITIONS
+                else None
+            )
+
+            if inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+                _ = model(inputs, batch_positions=batch_positions)
+            else:
+                _ = model(inputs)
+
             if device.type == "cuda":
                 torch.cuda.synchronize()
     logger.info("Warmup runs completed")
@@ -120,19 +137,26 @@ def _forward_with_timing(
     model: nn.Module,
     inputs: torch.Tensor,
     device: torch.device,
+    batch_positions: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Run a forward pass and measure its duration in seconds."""
     if torch.cuda.is_available() and device.type == "cuda":
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         start_event.record()
-        outputs = model(inputs)
+        if batch_positions is not None:
+            outputs = model(inputs, batch_positions=batch_positions)
+        else:
+            outputs = model(inputs)
         end_event.record()
         torch.cuda.synchronize()
         batch_time = start_event.elapsed_time(end_event) / 1000.0
     else:
         start = time.perf_counter()
-        outputs = model(inputs)
+        if batch_positions is not None:
+            outputs = model(inputs, batch_positions=batch_positions)
+        else:
+            outputs = model(inputs)
         batch_time = time.perf_counter() - start
 
     return outputs, batch_time
@@ -152,11 +176,29 @@ def _evaluate_batches(
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Evaluating", leave=False):
-            inputs, targets, sample_ids = batch
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+            inputs = batch[BATCH_INDEX_INPUTS].to(device)
+            targets = batch[BATCH_INDEX_TARGETS].to(device)
+            batch_positions = (
+                batch[BATCH_INDEX_POSITIONS].to(device)
+                if len(batch) > BATCH_INDEX_POSITIONS
+                else None
+            )
 
-            outputs, batch_time = _forward_with_timing(model, inputs, device)
+            sample_ids = (
+                batch[BATCH_INDEX_SAMPLE_IDS]
+                if len(batch) > BATCH_INDEX_SAMPLE_IDS
+                else batch[2]
+            )
+
+            if inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+                outputs, batch_time = _forward_with_timing(
+                    model,
+                    inputs,
+                    device,
+                    batch_positions,
+                )
+            else:
+                outputs, batch_time = _forward_with_timing(model, inputs, device)
             inference_times.append(batch_time)
             batch_sizes.append(inputs.shape[0])
 
