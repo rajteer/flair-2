@@ -4,6 +4,7 @@ This module contains functions used by both FlairDataset and FlairSentinelDatase
 for loading, filtering, and processing Sentinel-2 satellite imagery.
 """
 
+import json
 import logging
 import re
 from collections import defaultdict
@@ -12,6 +13,109 @@ from pathlib import Path
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+MAX_ORIGINAL_CLASS = 12
+OTHER_CLASS = 13
+
+
+def get_unique_id(filename: str) -> str:
+    """Extract unique ID from filename.
+
+    Args:
+        filename: Name of the file (e.g., "IMG_00001.tif" or "MSK_00001.tif")
+
+    Returns:
+        Extracted numeric ID from the filename
+
+    Raises:
+        ValueError: If no numeric ID can be extracted
+
+    """
+    match = re.search(r"(\d+)", filename)
+    if match is None:
+        msg = f"Could not extract numeric ID from filename: {filename}"
+        raise ValueError(msg)
+    return match.group(1)
+
+
+def get_path_mapping(directory: Path, pattern: str) -> dict[str, Path]:
+    """Create a mapping from unique IDs to file paths.
+
+    Args:
+        directory: The directory to search
+        pattern: The glob pattern to match files (e.g., "IMG_*.tif")
+
+    Returns:
+        A dictionary mapping unique IDs to file paths
+
+    """
+    return {
+        get_unique_id(path.name): path
+        for path in sorted(directory.rglob(pattern))
+    }
+
+
+def load_centroids_mapping(centroids_path: str | Path) -> dict[str, tuple[int, int]]:
+    """Load centroid coordinates mapping from JSON file.
+
+    Args:
+        centroids_path: Path to JSON file mapping image filenames to centroid coordinates
+
+    Returns:
+        Dictionary mapping image filenames to (x, y) centroid coordinates
+
+    """
+    with Path(centroids_path).open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_sentinel_superpatch_paths(
+    sentinel_dir: Path,
+    *,
+    load_masks: bool = True,
+    load_dates: bool = True,
+) -> tuple[dict[str, Path], dict[str, Path], dict[str, Path]]:
+    """Load paths to Sentinel-2 superpatch data, masks, and dates.
+
+    Args:
+        sentinel_dir: Directory containing Sentinel-2 superpatch data
+        load_masks: Whether to load cloud/snow mask paths
+        load_dates: Whether to load product date file paths
+
+    Returns:
+        Tuple of three dictionaries mapping domain_zone to paths:
+        - sentinel_data_dict: Paths to *_data.npy files
+        - sentinel_masks_dict: Paths to *_masks.npy files (empty if load_masks=False)
+        - sentinel_dates_dict: Paths to *_products.txt files (empty if load_dates=False)
+
+    """
+    sentinel_data_dict = {}
+    sentinel_masks_dict = {}
+    sentinel_dates_dict = {}
+
+    for sp_data_path in sentinel_dir.rglob("*_data.npy"):
+        parts = sp_data_path.parts
+        domain_zone = f"{parts[-4]}/{parts[-3]}"
+
+        sentinel_data_dict[domain_zone] = sp_data_path
+
+        if load_masks:
+            masks_path = sp_data_path.parent / sp_data_path.name.replace(
+                "_data.npy",
+                "_masks.npy",
+            )
+            if masks_path.exists():
+                sentinel_masks_dict[domain_zone] = masks_path
+
+        if load_dates:
+            dates_path = sp_data_path.parent / sp_data_path.name.replace(
+                "_data.npy",
+                "_products.txt",
+            )
+            if dates_path.exists():
+                sentinel_dates_dict[domain_zone] = dates_path
+
+    return sentinel_data_dict, sentinel_masks_dict, sentinel_dates_dict
 
 
 def extract_domain_zone(file_path: Path) -> str:
@@ -73,10 +177,6 @@ def filter_cloudy_snowy_timesteps(
     cloud_snow_prob_threshold: int = 50,
 ) -> np.ndarray:
     """Filter timesteps with high cloud or snow cover.
-
-    Implementation follows FLAIR-2 paper methodology:
-    "We remove satellite images with a snow or cloud cover of over 60%
-    according to the meta-data (with a probability threshold of 0.5)"
 
     Args:
         masks_patch: Cloud/snow masks array with shape (T, 2, H, W)
@@ -223,10 +323,12 @@ def extract_sentinel_patch(
             pad_y if pad_bottom else 0,
         ]
 
+        pad_mode = "constant" if patch.shape[2] == 0 or patch.shape[3] == 0 else "reflect"
+
         patch = np.pad(
             patch,
             ((0, 0), (0, 0), (padding[2], padding[3]), (padding[0], padding[1])),
-            mode="reflect",
+            mode=pad_mode,
         )
 
     return patch

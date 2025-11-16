@@ -1,6 +1,4 @@
-import json
 import logging
-import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,15 +9,17 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from .sentinel_utils import (
+    MAX_ORIGINAL_CLASS,
+    OTHER_CLASS,
     compute_monthly_averages,
     extract_domain_zone,
     extract_sentinel_patch,
     filter_cloudy_snowy_timesteps,
+    get_path_mapping,
+    load_centroids_mapping,
     load_sentinel_dates,
+    load_sentinel_superpatch_paths,
 )
-
-MAX_ORIGINAL_CLASS = 12
-OTHER_CLASS = 13
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,6 @@ class FlairDataset(Dataset):
         sentinel_patch_size: int = 40,
         *,
         use_sentinel: bool = False,
-        load_sentinel_masks: bool = False,
-        load_sentinel_dates: bool = False,
         remove_cloudy_snowy_timesteps: bool = False,
         use_monthly_average: bool = False,
         cloud_snow_cover_threshold: float = 0.6,
@@ -62,14 +60,11 @@ class FlairDataset(Dataset):
             selected_channels: Optional list of channels to select from aerial images
             sentinel_patch_size: Size of Sentinel-2 patch to extract (in Sentinel pixels)
             use_sentinel: Whether to load Sentinel-2 data
-            load_sentinel_masks: Whether to load Sentinel cloud/snow masks
-            load_sentinel_dates: Whether to load Sentinel product date strings
             remove_cloudy_snowy_timesteps: Whether to filter out timesteps with high
                 cloud/snow cover
             use_monthly_average: Whether to compute monthly averages from cloudless
                 dates. Returns up to 12 monthly averaged images (one per month with data).
-                Requires load_sentinel_masks=True and load_sentinel_dates=True.
-            cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1).
+                cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1).
                 Default 0.6 (60%)
             cloud_snow_prob_threshold: Minimum probability value (0-100) to consider a
                 pixel as cloudy/snowy. Default 50 (50%)
@@ -83,30 +78,24 @@ class FlairDataset(Dataset):
         self.selected_channels = selected_channels
         self.sentinel_patch_size = sentinel_patch_size
         self.use_sentinel = use_sentinel
-        self.load_sentinel_masks = load_sentinel_masks
-        self.load_sentinel_dates = load_sentinel_dates
         self.remove_cloudy_snowy_timesteps = remove_cloudy_snowy_timesteps
         self.use_monthly_average = use_monthly_average
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
 
-        if self.use_monthly_average:
-            if not self.load_sentinel_masks or not self.load_sentinel_dates:
-                msg = (
-                    "use_monthly_average=True requires both "
-                    "load_sentinel_masks=True and load_sentinel_dates=True"
-                )
-                raise ValueError(msg)
-            if self.remove_cloudy_snowy_timesteps:
-                logger.warning(
-                    "Both use_monthly_average and remove_cloudy_snowy_timesteps are enabled. "
-                    "Monthly averaging will be applied after filtering cloudy/snowy timesteps.",
-                )
+        self.load_sentinel_masks = remove_cloudy_snowy_timesteps or use_monthly_average
+        self.load_sentinel_dates = use_monthly_average
 
-        self.features_dict = self._get_path_mapping(self.image_dir, "IMG_*.tif")
+        if self.use_monthly_average and self.remove_cloudy_snowy_timesteps:
+            logger.warning(
+                "Both use_monthly_average and remove_cloudy_snowy_timesteps are enabled. "
+                "Monthly averaging will be applied after filtering cloudy/snowy timesteps.",
+            )
+
+        self.features_dict = get_path_mapping(self.image_dir, "IMG_*.tif")
 
         if self.mask_dir:
-            self.labels_dict = self._get_path_mapping(self.mask_dir, "MSK_*.tif")
+            self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
             shared_ids = set(self.features_dict.keys()) & set(self.labels_dict.keys())
             self.ids = sorted(shared_ids)
         else:
@@ -126,64 +115,16 @@ class FlairDataset(Dataset):
             centroids_path: Path to JSON file mapping image IDs to superpatch coordinates
 
         """
-        with Path.open(centroids_path, mode="r", encoding="utf-8") as f:
-            self.centroids_mapping = json.load(f)
-
-        self.sentinel_data_dict = {}
-        self.sentinel_masks_dict = {}
-        self.sentinel_dates_dict = {}
-
-        for sp_data_path in self.sentinel_dir.rglob("*_data.npy"):
-            # Extract domain and zone from path (e.g., D004_2021/Z14_AU)
-            # Path structure: .../domain/zone/sen/SEN2_*.npy
-            parts = sp_data_path.parts
-            domain_zone = f"{parts[-4]}/{parts[-3]}"
-
-            self.sentinel_data_dict[domain_zone] = sp_data_path
-
-            if self.load_sentinel_masks:
-                masks_path = sp_data_path.parent / sp_data_path.name.replace(
-                    "_data.npy", "_masks.npy",
-                )
-                if masks_path.exists():
-                    self.sentinel_masks_dict[domain_zone] = masks_path
-
-            if self.load_sentinel_dates:
-                dates_path = sp_data_path.parent / sp_data_path.name.replace(
-                    "_data.npy",
-                    "_products.txt",
-                )
-                if dates_path.exists():
-                    self.sentinel_dates_dict[domain_zone] = dates_path
-
-    def _get_unique_id(self, filename: str) -> str:
-        """Extract unique ID from filename.
-
-        Args:
-            filename: Name of the file
-
-        Returns:
-            Extracted ID from the filename
-
-        """
-        match = re.search(r"(\d+)", filename)
-        if match is None:
-            msg = f"Could not extract numeric ID from filename: {filename}"
-            raise ValueError(msg)
-        return match.group(1)
-
-    def _get_path_mapping(self, directory: Path, pattern: str) -> dict[str, Path]:
-        """Create a mapping from unique IDs to file paths.
-
-        Args:
-            directory: The directory to search
-            pattern: The glob pattern to match files
-
-        Returns:
-            A dictionary mapping unique IDs to file paths
-
-        """
-        return {self._get_unique_id(path.name): path for path in sorted(directory.rglob(pattern))}
+        self.centroids_mapping = load_centroids_mapping(centroids_path)
+        (
+            self.sentinel_data_dict,
+            self.sentinel_masks_dict,
+            self.sentinel_dates_dict,
+        ) = load_sentinel_superpatch_paths(
+            self.sentinel_dir,
+            load_masks=self.load_sentinel_masks,
+            load_dates=self.load_sentinel_dates,
+        )
 
     def __len__(self) -> int:
         """Return the number of image/mask pairs in the dataset."""

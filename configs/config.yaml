@@ -1,41 +1,34 @@
 data:
   train:
-    images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_train"
-    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_train"
-    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_train"
-
+    images: /Users/test/P/flair-2/data/flair_2_toy_aerial_train
+    masks: /Users/test/P/flair-2/data/flair_2_toy_labels_train
+    sentinel: /Users/test/P/flair-2/data/flair_2_toy_sen_train
   val:
-    images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_test"
-    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
-    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_test"
-
+    images: /Users/test/P/flair-2/data/flair_2_toy_aerial_test
+    masks: /Users/test/P/flair-2/data/flair_2_toy_labels_test
+    sentinel: /Users/test/P/flair-2/data/flair_2_toy_sen_test
   test:
-    images: "/Users/test/P/flair-2/data/flair_2_toy_aerial_test"
-    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
-    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_test"
-  
-  centroids_path: "/Users/test/P/flair-2/data/flair-2_centroids_sp_to_patch.json"
-  
-  dataset_version: "split_40"
+    images: /Users/test/P/flair-2/data/flair_2_toy_aerial_test
+    masks: /Users/test/P/flair-2/data/flair_2_toy_labels_test
+    sentinel: /Users/test/P/flair-2/data/flair_2_toy_sen_test
+  centroids_path: /Users/test/P/flair-2/data/flair-2_centroids_sp_to_patch.json
+  dataset_version: split_40
   num_classes: 13
   batch_size: 4
   num_workers: 0
-  selected_channels: [0, 1, 2, 3, 4]
+  selected_channels:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
   other_class_index: 12
-
-  use_sentinel: false 
-  load_sentinel_masks: false 
-  load_sentinel_dates: false
-  
-  # Sentinel-2 filtering
-  # Remove timesteps with >60% cloud/snow cover (probability threshold 0.5)
+  use_sentinel: false
   filter_clouds_snow: false
   sentinel_patch_size: 40
-  cloud_snow_cover_threshold: 0.6  # Remove if >60% covered
-  cloud_prob_threshold: 50   # Consider pixel cloudy if prob >= 50
-  use_monthly_average: true 
-
-
+  cloud_snow_cover_threshold: 0.6
+  cloud_prob_threshold: 50
+  use_monthly_average: true
   data_augmentation:
     apply_augmentations: true
     augmentations:
@@ -45,71 +38,73 @@ data:
         prob: 0.5
       rotation:
         prob: 0.5
-        angles: [0, 90, 180, 270]
+        angles:
+          - 0
+          - 90
+          - 180
+          - 270
       contrast:
         prob: 0.5
-        range: [0.8, 1.2]
+        range:
+          - 0.8
+          - 1.2
       brightness:
         prob: 0.5
-        range: [0.8, 1.2]
-
+        range:
+          - 0.8
+          - 1.2
 mlflow:
-  name: "aerial_images-only"
-  run_name: "DeepLabV3Plus_efficientnet_b5_cross_entropy_split_45"
+  name: aerial_images-only
+  run_name: DeepLabV3Plus_efficientnet_b5_cross_entropy_split_45
   tracking_uri: null
-  note: "pipeline_test"
+  note: pipeline_test
   dagshub:
-    enabled: true
-    repo_owner: "prajter00"
-    repo_name: "flair-2"
+    enabled: false
+    repo_owner: prajter00
+    repo_name: flair-2
     branch: null
-
 model:
-  model_type: "Segformer"
-  encoder_name: "mit_b0"
-  encoder_weights: "imagenet"
+  model_type: Segformer
+  encoder_name: mit_b0
+  encoder_weights: imagenet
   activation: null
   dynamic_img_size: false
-
 training:
-  device: "cuda"
+  device: cuda
   optimizer:
-    type: "AdamW"
-    learning_rate: 1e-4
-    betas: [0.9, 0.95]
-    weight_decay: 1e-5
+    type: AdamW
+    learning_rate: 0.0001
+    betas:
+      - 0.9
+      - 0.95
+    weight_decay: 0.00001
   lr_scheduler:
-    type: "ReduceLROnPlateau"
+    type: ReduceLROnPlateau
     args:
-      mode: "min"
+      mode: min
       factor: 0.5
       patience: 2
       threshold: 0.0001
   epochs: 2
   early_stopping_patience: 3
   loss_function:
-    type: "LovaszLoss"
+    type: LovaszLoss
     args:
-#      smooth_factor: 0.0
-#      ignore_index: 12
-      mode: "multiclass"
-
+      mode: multiclass
 experiment:
   seed: 42
   deterministic: true
-
 evaluation:
   log_confusion_matrix: true
   log_comparison: true
-  log_sample_ids: ["006512",  "006975"]
-
+  log_sample_ids:
+    - "006512"
+    - "006975"
 visualization:
-  language: "pl"  # or "en" for English
+  language: pl
   labels:
-    ground_truth: "Rzeczywistość"
-    prediction: "Predykcja"
-    predicted_class: "Klasa przewidywana"
-    actual_class: "Klasa rzeczywista"
-    confusion_matrix_title: "Macierz pomyłek"
-
-
+    ground_truth: Rzeczywistość
+    prediction: Predykcja
+    predicted_class: Klasa przewidywana
+    actual_class: Klasa rzeczywista
+    confusion_matrix_title: Macierz pomyłek

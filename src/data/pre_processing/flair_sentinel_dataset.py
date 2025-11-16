@@ -1,8 +1,6 @@
 """Sentinel-only dataset for FLAIR-2 land cover segmentation experiments."""
 
-import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
@@ -12,15 +10,17 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 
 from .sentinel_utils import (
+    MAX_ORIGINAL_CLASS,
+    OTHER_CLASS,
     compute_monthly_averages,
     extract_domain_zone,
     extract_sentinel_patch,
     filter_cloudy_snowy_timesteps,
+    get_path_mapping,
+    load_centroids_mapping,
     load_sentinel_dates,
+    load_sentinel_superpatch_paths,
 )
-
-MAX_ORIGINAL_CLASS = 12
-OTHER_CLASS = 13
 
 logger = logging.getLogger(__name__)
 
@@ -31,17 +31,6 @@ class FlairSentinelDataset(Dataset):
     This dataset loads only Sentinel-2 satellite imagery and downsamples ground truth
     masks to match the Sentinel spatial resolution. It's designed for experiments that
     focus on satellite-only classification without aerial imagery.
-
-    Key features:
-    - Cloud/snow filtering based on FLAIR-2 methodology (60% coverage threshold)
-    - Monthly averaging to create temporally stable representations
-    - Returns monthly time series (M, C, H, W) where M ≤ 12 per year
-    - Mask downsampling to Sentinel resolution (10m/pixel)
-
-    Note: Monthly averaging is the recommended preprocessing approach. Raw timesteps
-    have variable numbers (~30-40/year) and cloud contamination. Monthly averages
-    provide more stable temporal signals with up to 12 months per year, or ~120
-    months for multi-year datasets.
     """
 
     def __init__(
@@ -80,7 +69,7 @@ class FlairSentinelDataset(Dataset):
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
 
-        self.labels_dict = self._get_path_mapping(self.mask_dir, "MSK_*.tif")
+        self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
 
         self.features_dict = {
@@ -88,48 +77,16 @@ class FlairSentinelDataset(Dataset):
             for id_, path in self.labels_dict.items()
         }
 
-        self._load_sentinel_data(centroids_path)
-
-    def _get_unique_id(self, filename: str) -> str:
-        """Extract unique ID from filename."""
-        match = re.search(r"(\d+)", filename)
-        if match is None:
-            msg = f"Could not extract numeric ID from filename: {filename}"
-            raise ValueError(msg)
-        return match.group(1)
-
-    def _get_path_mapping(self, directory: Path, pattern: str) -> dict[str, Path]:
-        """Create a mapping from unique IDs to file paths."""
-        return {self._get_unique_id(path.name): path for path in sorted(directory.rglob(pattern))}
-
-    def _load_sentinel_data(self, centroids_path: str) -> None:
-        """Load Sentinel-2 superpatch data and centroid mappings."""
-        with Path.open(centroids_path, encoding="utf-8") as f:
-            self.centroids_mapping = json.load(f)
-
-        self.sentinel_data_dict = {}
-        self.sentinel_masks_dict = {}
-        self.sentinel_dates_dict = {}
-
-        for sp_data_path in self.sentinel_dir.rglob("*_data.npy"):
-            parts = sp_data_path.parts
-            domain_zone = f"{parts[-4]}/{parts[-3]}"
-
-            self.sentinel_data_dict[domain_zone] = sp_data_path
-
-            masks_path = sp_data_path.parent / sp_data_path.name.replace(
-                "_data.npy",
-                "_masks.npy",
-            )
-            if masks_path.exists():
-                self.sentinel_masks_dict[domain_zone] = masks_path
-
-            dates_path = sp_data_path.parent / sp_data_path.name.replace(
-                "_data.npy",
-                "_products.txt",
-            )
-            if dates_path.exists():
-                self.sentinel_dates_dict[domain_zone] = dates_path
+        self.centroids_mapping = load_centroids_mapping(centroids_path)
+        (
+            self.sentinel_data_dict,
+            self.sentinel_masks_dict,
+            self.sentinel_dates_dict,
+        ) = load_sentinel_superpatch_paths(
+            self.sentinel_dir,
+            load_masks=True,
+            load_dates=True,
+        )
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -250,9 +207,6 @@ class FlairSentinelDataset(Dataset):
 
     def get_class_counts(self) -> torch.Tensor:
         """Calculate the distribution of classes in the dataset at Sentinel resolution.
-
-        Note: This computes class counts on downsampled masks at Sentinel resolution,
-        which may differ from the original aerial resolution class distribution.
 
         Returns:
             Tensor with count of pixels for each class.
