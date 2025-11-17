@@ -345,7 +345,8 @@ def run_train_eval(args: argparse.Namespace) -> None:
     config = read_yaml(config_file)
 
     pipeline = SentinelTrainEvalPipeline(
-        run_name=config["mlflow"]["run_name"], logs_dir=args.logs_dir
+        run_name=config["mlflow"]["run_name"],
+        logs_dir=args.logs_dir,
     )
     pipeline.run(config, no_stdout_logs=args.no_stdout_logs)
 

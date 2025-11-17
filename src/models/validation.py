@@ -185,9 +185,7 @@ def _evaluate_batches(
             )
 
             sample_ids = (
-                batch[BATCH_INDEX_SAMPLE_IDS]
-                if len(batch) > BATCH_INDEX_SAMPLE_IDS
-                else batch[2]
+                batch[BATCH_INDEX_SAMPLE_IDS] if len(batch) > BATCH_INDEX_SAMPLE_IDS else batch[2]
             )
 
             if inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:

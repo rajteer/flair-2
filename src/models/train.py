@@ -86,9 +86,7 @@ def _get_sample_batch(
     """Return the first batch's inputs and optional temporal positions."""
     batch = next(iter(loader))
     inputs = batch[BATCH_INDEX_INPUTS]
-    batch_positions = (
-        batch[BATCH_INDEX_POSITIONS] if len(batch) > BATCH_INDEX_POSITIONS else None
-    )
+    batch_positions = batch[BATCH_INDEX_POSITIONS] if len(batch) > BATCH_INDEX_POSITIONS else None
     return inputs, batch_positions
 
 
