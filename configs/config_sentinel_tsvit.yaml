@@ -1,0 +1,94 @@
+data:
+  train:
+    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_train"
+    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_train"
+
+  val:
+    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
+    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_test"
+
+  test:
+    masks: "/Users/test/P/flair-2/data/flair_2_toy_labels_test"
+    sentinel: "/Users/test/P/flair-2/data/flair_2_toy_sen_test"
+  
+  centroids_path: "/Users/test/P/flair-2/data/flair-2_centroids_sp_to_patch.json"
+  
+  dataset_version: "split_40"
+  num_classes: 13
+  batch_size: 8
+  num_workers: 0
+  selected_channels: [0, 1, 2, 3, 4]
+  other_class_index: 12
+
+  filter_clouds_snow: false
+  sentinel_patch_size: 10
+  cloud_snow_cover_threshold: 0.6  
+  cloud_snow_prob_threshold: 50
+  use_monthly_average: false 
+
+mlflow:
+  name: "sentinel_only_tsvit"
+  run_name: "tsvit_toy_smoke"
+  tracking_uri: null
+  note: "TSViT smoke test"
+  dagshub:
+    enabled: true
+    repo_owner: "prajter00"
+    repo_name: "flair-2"
+    branch: null
+
+model:
+  model_type: "TSVIT"
+  encoder_name: "na"
+  encoder_weights: null
+  activation: null
+  in_channels: 10
+  image_size: 10
+  patch_size: 2
+  max_seq_len: 50
+  dim: 128
+  temporal_depth: 2
+  spatial_depth: 2
+  num_heads: 4
+  mlp_dim: 256
+  dropout: 0.1
+  emb_dropout: 0.1
+
+training:
+  device: "cuda"
+  optimizer:
+    type: "AdamW"
+    learning_rate: 5e-2
+    betas: [0.9, 0.99]
+    weight_decay: 1e-4
+  lr_scheduler:
+    type: "ReduceLROnPlateau"
+    args:
+      mode: "min"
+      factor: 0.5
+      patience: 5
+      threshold: 0.0001
+  epochs: 30
+  early_stopping_patience: 10
+  loss_function:
+    type: "CrossEntropyLoss"
+    args:
+      ignore_index: 12
+
+experiment:
+  seed: 42
+  deterministic: true
+
+evaluation:
+  log_confusion_matrix: false
+  log_comparison: false
+  log_sample_ids: []
+
+visualization:
+  language: "en"
+  labels:
+    ground_truth: "Ground Truth"
+    prediction: "Prediction"
+    predicted_class: "Predicted Class"
+    actual_class: "Actual Class"
+    confusion_matrix_title: "Confusion Matrix"

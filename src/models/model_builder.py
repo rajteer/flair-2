@@ -7,6 +7,7 @@ from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss
+from src.models.tsvit import TSViT
 
 
 def build_model(
@@ -61,6 +62,49 @@ def build_model(
         }
 
         return UTAE(**utae_params)
+    if model_type.upper() == "TSVIT":
+        tsvit_config = model_config or {}
+
+        image_size = tsvit_config.get("image_size", tsvit_config.get("img_res"))
+        patch_size = tsvit_config.get("patch_size")
+        max_seq_len = tsvit_config.get("max_seq_len")
+        dim = tsvit_config.get("dim")
+
+        missing = [
+            key
+            for key, value in {
+                "image_size": image_size,
+                "patch_size": patch_size,
+                "max_seq_len": max_seq_len,
+                "dim": dim,
+            }.items()
+            if value is None
+        ]
+        if missing:
+            msg = f"Missing TSViT config keys: {', '.join(missing)}"
+            raise ValueError(msg)
+
+        depth_fallback = tsvit_config.get("depth", 4)
+        mlp_dim = tsvit_config.get(
+            "mlp_dim",
+            tsvit_config.get("scale_dim", 4) * dim,
+        )
+
+        return TSViT(
+            image_size=int(image_size),
+            patch_size=int(patch_size),
+            in_channels=in_channels,
+            num_classes=n_classes,
+            max_seq_len=int(max_seq_len),
+            dim=int(dim),
+            temporal_depth=int(tsvit_config.get("temporal_depth", depth_fallback)),
+            spatial_depth=int(tsvit_config.get("spatial_depth", depth_fallback)),
+            num_heads=int(tsvit_config.get("num_heads", 4)),
+            mlp_dim=int(mlp_dim),
+            dropout=float(tsvit_config.get("dropout", 0.0)),
+            emb_dropout=float(tsvit_config.get("emb_dropout", 0.0)),
+            temporal_metadata_channels=int(tsvit_config.get("temporal_metadata_channels", 0)),
+        )
 
     try:
         model_class = getattr(smp, model_type)
