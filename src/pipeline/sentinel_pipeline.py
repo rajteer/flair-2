@@ -88,8 +88,6 @@ class SentinelTrainEvalPipeline:
             mlflow.log_params(
                 {
                     "model_type": config["model"]["model_type"],
-                    "encoder_name": config["model"]["encoder_name"],
-                    "encoder_weights": config["model"]["encoder_weights"],
                     "in_channels": config["model"]["in_channels"],
                     "n_classes": config["data"]["num_classes"],
                 },
@@ -217,8 +215,8 @@ class SentinelTrainEvalPipeline:
             )
             model = build_model(
                 model_type=config["model"]["model_type"],
-                encoder_name=config["model"]["encoder_name"],
-                encoder_weights=config["model"]["encoder_weights"],
+                encoder_name=config["model"].get("encoder_name", ""),
+                encoder_weights=config["model"].get("encoder_weights"),
                 in_channels=config["model"]["in_channels"],
                 n_classes=config["data"]["num_classes"],
                 dynamic_img_size=config["model"].get("dynamic_img_size", False),
