@@ -27,7 +27,7 @@ authors = [
 license = {text = "MIT"}
 
 [project.scripts]
-flair-train = "pipeline.pipeline:main"
+flair-train = "src.pipeline.pipeline:main"
 
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["torch"]
@@ -67,12 +67,6 @@ ignore = [
 
 [tool.uv]
 package = true
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
