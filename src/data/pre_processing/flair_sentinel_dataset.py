@@ -154,7 +154,7 @@ class FlairSentinelDataset(Dataset):
         centroid_x, centroid_y = self.centroids_mapping[img_filename]
 
         sp_data_path = self.sentinel_data_dict[domain_zone]
-        sp_data = np.load(sp_data_path)  # Shape: (T, C, H, W)
+        sp_data = np.load(sp_data_path, mmap_mode="r")  # Shape: (T, C, H, W)
 
         sentinel_patch = extract_sentinel_patch(
             sp_data,
@@ -236,7 +236,7 @@ class FlairSentinelDataset(Dataset):
         """
         class_counts = torch.zeros(self.num_classes, dtype=torch.int64)
         for idx in tqdm(range(len(self)), desc="Computing class counts"):
-            _, mask, _ = self[idx]
+            _, mask, _, _= self[idx]
             counts = torch.bincount(mask.flatten(), minlength=self.num_classes)
             class_counts += counts
 
