@@ -288,6 +288,10 @@ def compute_monthly_averages(
         if cloudless_timesteps:
             monthly_cloudless[(year, month)] = cloudless_timesteps
 
+    # Fallback: if no cloudless timesteps found, use all timesteps grouped by month
+    if not monthly_cloudless:
+        monthly_cloudless = dict(monthly_timesteps)
+
     sorted_months = sorted(monthly_cloudless.keys())
     monthly_data_list = []
     month_indices = []

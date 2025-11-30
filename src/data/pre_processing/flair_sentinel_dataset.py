@@ -202,6 +202,8 @@ class FlairSentinelDataset(Dataset):
                 feature_path.name,
                 domain_zone,
             )
+            # Use all timesteps as fallback
+            valid_timesteps = list(range(sentinel_patch.shape[0]))
         else:
             sentinel_patch = sentinel_patch[valid_timesteps]
             masks_patch = masks_patch[valid_timesteps]
