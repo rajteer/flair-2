@@ -45,6 +45,7 @@ class FlairSentinelDataset(Dataset):
         use_monthly_average: bool = True,
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
+        sentinel_scale_factor: float = 10000.0,
     ) -> None:
         """Initialize the Sentinel-only FLAIR-2 dataset.
 
@@ -60,6 +61,9 @@ class FlairSentinelDataset(Dataset):
                 Default 0.6 (60%) as per FLAIR-2 paper.
             cloud_snow_prob_threshold: Minimum probability (0-100) to consider a pixel
                 as cloudy/snowy. Default 50 (50%) as per FLAIR-2 paper.
+            sentinel_scale_factor: Factor to divide Sentinel-2 reflectance values by.
+                Default 10000.0 scales reflectance (0-10000) to [0, 1].
+                Set to 1.0 to disable scaling.
 
         """
         self.mask_dir = Path(mask_dir)
@@ -69,6 +73,7 @@ class FlairSentinelDataset(Dataset):
         self.use_monthly_average = use_monthly_average
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
+        self.sentinel_scale_factor = sentinel_scale_factor
 
         self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
@@ -179,7 +184,10 @@ class FlairSentinelDataset(Dataset):
                 product_names = load_sentinel_dates(self.sentinel_dates_dict[domain_zone])
                 day_of_year = [parse_sentinel_day_of_year(name) for name in product_names]
                 positions = torch.tensor(day_of_year, dtype=torch.long)
-            return torch.from_numpy(sentinel_patch).float(), positions
+            sentinel_tensor = torch.from_numpy(sentinel_patch).float()
+            if self.sentinel_scale_factor != 1.0:
+                sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+            return sentinel_tensor, positions
 
         sp_masks = np.load(sp_masks_path)  # Shape: (T, 2, H, W)
 
@@ -227,7 +235,10 @@ class FlairSentinelDataset(Dataset):
             day_of_year = [parse_sentinel_day_of_year(name) for name in product_names]
             month_positions = torch.tensor(day_of_year, dtype=torch.long)
 
-        return torch.from_numpy(sentinel_patch).float(), month_positions
+        sentinel_tensor = torch.from_numpy(sentinel_patch).float()
+        if self.sentinel_scale_factor != 1.0:
+            sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+        return sentinel_tensor, month_positions
 
     def get_class_counts(self) -> torch.Tensor:
         """Calculate the distribution of classes in the dataset at Sentinel resolution.

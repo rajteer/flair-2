@@ -121,6 +121,10 @@ class SentinelTrainEvalPipeline:
                         "cloud_snow_prob_threshold",
                         50,
                     ),
+                    "sentinel_scale_factor": config["data"].get(
+                        "sentinel_scale_factor",
+                        10000.0,
+                    ),
                 },
             )
 
@@ -130,7 +134,7 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
             mlflow.set_tag("data_type", "sentinel_2_only")
 
-            # Create Sentinel-2 datasets
+
             test_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["test"]["masks"],
                 sentinel_dir=config["data"]["test"]["sentinel"],
@@ -140,6 +144,7 @@ class SentinelTrainEvalPipeline:
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
+                sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
             )
 
             train_dataset = FlairSentinelDataset(
@@ -151,6 +156,7 @@ class SentinelTrainEvalPipeline:
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
+                sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
             )
 
             val_dataset = FlairSentinelDataset(
@@ -162,6 +168,7 @@ class SentinelTrainEvalPipeline:
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
+                sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
             )
 
             generator = create_generator(seed)
