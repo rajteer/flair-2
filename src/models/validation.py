@@ -25,6 +25,7 @@ TEMPORAL_MODEL_NDIM = 5
 
 BATCH_INDEX_INPUTS = 0
 BATCH_INDEX_TARGETS = 1
+BATCH_INDEX_PAD_MASK = 2
 BATCH_INDEX_SAMPLE_IDS = 3
 BATCH_INDEX_POSITIONS = 4
 
@@ -101,68 +102,102 @@ def compute_timing_metrics(
     }
 
 
-def _perform_warmup(
+def _perform_warmup_temporal(
     model: nn.Module,
     device: torch.device,
     data_loader: DataLoader,
     warmup_runs: int,
 ) -> None:
-    """Run a series of warmup forward passes to stabilize timings."""
+    """Run warmup forward passes for temporal models."""
     if warmup_runs <= 0:
         return
 
-    logger.info("Performing %d warmup runs...", warmup_runs)
+    logger.info("Performing %d warmup runs (temporal model)...", warmup_runs)
     with torch.no_grad():
         for warmup_count, batch in enumerate(data_loader):
             if warmup_count >= warmup_runs:
                 break
             inputs = batch[BATCH_INDEX_INPUTS].to(device)
-            batch_positions = (
-                batch[BATCH_INDEX_POSITIONS].to(device)
-                if len(batch) > BATCH_INDEX_POSITIONS
-                else None
-            )
+            pad_mask = batch[BATCH_INDEX_PAD_MASK].to(device)
+            batch_positions = batch[BATCH_INDEX_POSITIONS].to(device)
 
-            if inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-                _ = model(inputs, batch_positions=batch_positions)
-            else:
-                _ = model(inputs)
+            _ = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
 
             if device.type == "cuda":
                 torch.cuda.synchronize()
     logger.info("Warmup runs completed")
 
 
-def _forward_with_timing(
+def _perform_warmup_standard(
+    model: nn.Module,
+    device: torch.device,
+    data_loader: DataLoader,
+    warmup_runs: int,
+) -> None:
+    """Run warmup forward passes for standard models."""
+    if warmup_runs <= 0:
+        return
+
+    logger.info("Performing %d warmup runs (standard model)...", warmup_runs)
+    with torch.no_grad():
+        for warmup_count, batch in enumerate(data_loader):
+            if warmup_count >= warmup_runs:
+                break
+            inputs = batch[BATCH_INDEX_INPUTS].to(device)
+            _ = model(inputs)
+
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+    logger.info("Warmup runs completed")
+
+
+def _forward_with_timing_temporal(
     model: nn.Module,
     inputs: torch.Tensor,
     device: torch.device,
-    batch_positions: torch.Tensor | None = None,
+    batch_positions: torch.Tensor,
+    pad_mask: torch.Tensor,
 ) -> tuple[torch.Tensor, float]:
-    """Run a forward pass and measure its duration in seconds."""
+    """Run a forward pass for temporal models and measure its duration."""
     if torch.cuda.is_available() and device.type == "cuda":
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         start_event.record()
-        if batch_positions is not None:
-            outputs = model(inputs, batch_positions=batch_positions)
-        else:
-            outputs = model(inputs)
+        outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
         end_event.record()
         torch.cuda.synchronize()
         batch_time = start_event.elapsed_time(end_event) / 1000.0
     else:
         start = time.perf_counter()
-        if batch_positions is not None:
-            outputs = model(inputs, batch_positions=batch_positions)
-        else:
-            outputs = model(inputs)
+        outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
         batch_time = time.perf_counter() - start
 
     return outputs, batch_time
 
 
-def _evaluate_batches(
+def _forward_with_timing_standard(
+    model: nn.Module,
+    inputs: torch.Tensor,
+    device: torch.device,
+) -> tuple[torch.Tensor, float]:
+    """Run a forward pass for standard models and measure its duration."""
+    if torch.cuda.is_available() and device.type == "cuda":
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        outputs = model(inputs)
+        end_event.record()
+        torch.cuda.synchronize()
+        batch_time = start_event.elapsed_time(end_event) / 1000.0
+    else:
+        start = time.perf_counter()
+        outputs = model(inputs)
+        batch_time = time.perf_counter() - start
+
+    return outputs, batch_time
+
+
+def _evaluate_batches_temporal(
     model: nn.Module,
     device: torch.device,
     data_loader: DataLoader,
@@ -170,7 +205,7 @@ def _evaluate_batches(
     evaluation_metrics_dict: dict[str, Metric],
     sample_ids_to_log: set[str],
 ) -> tuple[list[float], list[int]]:
-    """Iterate over the dataloader, update metrics, and collect timing stats."""
+    """Iterate over dataloader for temporal models, update metrics, and collect timing stats."""
     inference_times: list[float] = []
     batch_sizes: list[int] = []
 
@@ -178,25 +213,63 @@ def _evaluate_batches(
         for batch in tqdm(data_loader, desc="Evaluating", leave=False):
             inputs = batch[BATCH_INDEX_INPUTS].to(device)
             targets = batch[BATCH_INDEX_TARGETS].to(device)
-            batch_positions = (
-                batch[BATCH_INDEX_POSITIONS].to(device)
-                if len(batch) > BATCH_INDEX_POSITIONS
-                else None
-            )
+            pad_mask = batch[BATCH_INDEX_PAD_MASK].to(device)
+            batch_positions = batch[BATCH_INDEX_POSITIONS].to(device)
 
             sample_ids = (
                 batch[BATCH_INDEX_SAMPLE_IDS] if len(batch) > BATCH_INDEX_SAMPLE_IDS else batch[2]
             )
 
-            if inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-                outputs, batch_time = _forward_with_timing(
-                    model,
-                    inputs,
-                    device,
-                    batch_positions,
-                )
-            else:
-                outputs, batch_time = _forward_with_timing(model, inputs, device)
+            outputs, batch_time = _forward_with_timing_temporal(
+                model,
+                inputs,
+                device,
+                batch_positions,
+                pad_mask,
+            )
+            inference_times.append(batch_time)
+            batch_sizes.append(inputs.shape[0])
+
+            processed_outputs = process_segmentation_tensor(outputs, num_classes)
+
+            for metric in evaluation_metrics_dict.values():
+                metric.update(processed_outputs, targets)
+
+            if sample_ids_to_log:
+                selected_ids = {
+                    sample_id for sample_id in sample_ids if sample_id in sample_ids_to_log
+                }
+                if selected_ids:
+                    log_prediction_plots(outputs, sample_ids, num_classes, selected_ids)
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return inference_times, batch_sizes
+
+
+def _evaluate_batches_standard(
+    model: nn.Module,
+    device: torch.device,
+    data_loader: DataLoader,
+    num_classes: int,
+    evaluation_metrics_dict: dict[str, Metric],
+    sample_ids_to_log: set[str],
+) -> tuple[list[float], list[int]]:
+    """Iterate over dataloader for standard models, update metrics, and collect timing stats."""
+    inference_times: list[float] = []
+    batch_sizes: list[int] = []
+
+    with torch.no_grad():
+        for batch in tqdm(data_loader, desc="Evaluating", leave=False):
+            inputs = batch[BATCH_INDEX_INPUTS].to(device)
+            targets = batch[BATCH_INDEX_TARGETS].to(device)
+
+            sample_ids = (
+                batch[BATCH_INDEX_SAMPLE_IDS] if len(batch) > BATCH_INDEX_SAMPLE_IDS else batch[2]
+            )
+
+            outputs, batch_time = _forward_with_timing_standard(model, inputs, device)
             inference_times.append(batch_time)
             batch_sizes.append(inputs.shape[0])
 
@@ -326,16 +399,31 @@ def evaluate(
 
     sample_ids_to_log = set(sample_ids_to_plot) if sample_ids_to_plot else set()
 
-    _perform_warmup(model, device, data_loader, warmup_runs)
+    first_batch = next(iter(data_loader))
+    is_temporal_model = first_batch[BATCH_INDEX_INPUTS].ndim == TEMPORAL_MODEL_NDIM
 
-    inference_times, batch_sizes = _evaluate_batches(
-        model,
-        device,
-        data_loader,
-        num_classes,
-        evaluation_metrics_dict,
-        sample_ids_to_log,
-    )
+    if is_temporal_model:
+        logger.info("Detected temporal model (5D input). Using temporal evaluation.")
+        _perform_warmup_temporal(model, device, data_loader, warmup_runs)
+        inference_times, batch_sizes = _evaluate_batches_temporal(
+            model,
+            device,
+            data_loader,
+            num_classes,
+            evaluation_metrics_dict,
+            sample_ids_to_log,
+        )
+    else:
+        logger.info("Detected standard model. Using standard evaluation.")
+        _perform_warmup_standard(model, device, data_loader, warmup_runs)
+        inference_times, batch_sizes = _evaluate_batches_standard(
+            model,
+            device,
+            data_loader,
+            num_classes,
+            evaluation_metrics_dict,
+            sample_ids_to_log,
+        )
 
     logger.info("Finished evaluation")
 

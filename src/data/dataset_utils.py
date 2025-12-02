@@ -31,7 +31,7 @@ def pad_tensor(
 
 def pad_collate_sentinel(
     batch: list[tuple[torch.Tensor, torch.Tensor, str, torch.Tensor]],
-    pad_value: float = 0.0,
+    pad_value: float = -1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,  list[str], torch.Tensor]:
     """Collate function for batching Sentinel-2 samples with variable temporal dimensions.
 
@@ -74,8 +74,8 @@ def pad_collate_sentinel(
     for data, positions in zip(sentinel_data_list, month_positions_list):
         padded_data = pad_tensor(data, max_temporal_length, pad_value=pad_value)
         padded_sentinel_list.append(padded_data)
-        
-        padded_positions = pad_tensor(positions, max_temporal_length, pad_value=0.0)
+
+        padded_positions = pad_tensor(positions, max_temporal_length, pad_value=pad_value)
         padded_positions_list.append(padded_positions)
 
     padded_sentinel = torch.stack(padded_sentinel_list)
@@ -87,42 +87,6 @@ def pad_collate_sentinel(
             pad_mask[i, original_length:] = True
 
     return padded_sentinel, masks, pad_mask, sample_ids, batch_positions
-
-
-def pad_collate_train(
-    batch: list[tuple[torch.Tensor, torch.Tensor, str, torch.Tensor]],
-    pad_value: float = 0.0,
-) -> dict[str, torch.Tensor | list[str]]:
-    """Collate function returning a dictionary format (FLAIR-2 baseline compatible).
-
-    This is an alternative interface to pad_collate_sentinel that returns data
-    in a dictionary format similar to the FLAIR-2 baseline implementation.
-
-    Args:
-        batch: List of tuples (sentinel_data, mask, sample_id, month_positions)
-        pad_value: Value to use for padding temporal dimension (default: 0.0)
-
-    Returns:
-        Dictionary with keys:
-            - 'spatch': Sentinel patches, shape (B, T_max, C, H, W)
-            - 'slabels': Sentinel masks, shape (B, H, W)
-            - 'pad_mask': Boolean tensor, shape (B, T_max)
-            - 'sample_ids': List of sample identifiers
-            - 'batch_positions': Month indices, shape (B, T_max)
-
-    """
-    padded_sentinel, masks, pad_mask, sample_ids, batch_positions = pad_collate_sentinel(
-        batch,
-        pad_value=pad_value,
-    )
-
-    return {
-        "spatch": padded_sentinel,
-        "slabels": masks,
-        "pad_mask": pad_mask,
-        "sample_ids": sample_ids,
-        "batch_positions": batch_positions,
-    }
 
 
 def pad_collate_flair(
