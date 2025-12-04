@@ -2,6 +2,7 @@ import inspect
 import logging
 import time
 
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -17,6 +18,7 @@ from src.models.utils import process_segmentation_tensor
 from src.utils.mlflow_utils import (
     log_confusion_matrix_to_mlflow,
     log_metrics_to_mlflow,
+    log_mosaic_plot,
     log_prediction_plots,
 )
 
@@ -29,6 +31,155 @@ BATCH_INDEX_TARGETS = 1
 BATCH_INDEX_PAD_MASK = 2
 BATCH_INDEX_SAMPLE_IDS = 3
 BATCH_INDEX_POSITIONS = 4
+
+
+def infer_grid_from_id_list(
+    sample_ids: list[str],
+) -> tuple[int, int, dict[str, tuple[int, int]]]:
+    """Infer grid dimensions and positions from the order of sample IDs in the list.
+
+    This function assumes that the sample_ids list is ordered in a consistent pattern
+    (e.g., row-major or column-major order) and tries to infer the grid shape.
+
+    The function looks for a rectangular grid where:
+    - IDs are grouped by common prefixes (suggesting they belong to the same row/column)
+    - The total count matches rows x cols
+
+    If no clear pattern is found, it attempts to create a roughly square grid.
+
+    Args:
+        sample_ids: List of sample ID strings in their intended spatial order.
+
+    Returns:
+        Tuple of (num_rows, num_cols, position_map) where position_map
+        maps sample_id -> (row, col) based on list order.
+
+    """
+    n = len(sample_ids)
+    if n == 0:
+        return 0, 0, {}
+
+    # Try to detect grid dimensions by looking at ID patterns
+    # Group IDs by their prefix (all but last 1-2 digits)
+    prefix_groups: dict[str, list[str]] = {}
+    for sid in sample_ids:
+        # Try different prefix lengths to find grouping
+        prefix = sid[:-1] if len(sid) > 1 else sid
+        if prefix not in prefix_groups:
+            prefix_groups[prefix] = []
+        prefix_groups[prefix].append(sid)
+
+    # Check if we have consistent group sizes (suggests column count)
+    group_sizes = [len(g) for g in prefix_groups.values()]
+    if group_sizes and all(s == group_sizes[0] for s in group_sizes):
+        # Consistent grouping found
+        num_cols = group_sizes[0]
+        num_rows = len(prefix_groups)
+    else:
+        # Fall back to square-ish grid
+        num_cols = int(np.ceil(np.sqrt(n)))
+        num_rows = int(np.ceil(n / num_cols))
+
+    # Create position map based on list order (row-major)
+    positions = {}
+    for idx, sid in enumerate(sample_ids):
+        row = idx // num_cols
+        col = idx % num_cols
+        positions[sid] = (row, col)
+
+    logger.info(
+        "Inferred grid dimensions: %d rows x %d cols from %d sample IDs",
+        num_rows,
+        num_cols,
+        n,
+    )
+
+    return num_rows, num_cols, positions
+
+
+def stitch_patches_to_mosaic(
+    patches: dict[str, np.ndarray],
+    sample_ids: list[str],
+    patch_size: int = 512,
+    grid_shape: tuple[int, int] | None = None,
+) -> np.ndarray | None:
+    """Stitch multiple patches into a single mosaic image.
+
+    Args:
+        patches: Dictionary mapping sample_id to patch array (H, W) or (C, H, W).
+        sample_ids: List of sample IDs that form the mosaic, ordered spatially
+            (row-major order: left-to-right, top-to-bottom).
+        patch_size: Size of each patch (assumed square).
+        grid_shape: Optional explicit (num_rows, num_cols) shape. If not provided,
+            the grid shape is inferred from the sample_ids list.
+
+    Returns:
+        Stitched mosaic array, or None if stitching fails.
+
+    """
+    if grid_shape is not None:
+        num_rows, num_cols = grid_shape
+        # Create position map based on list order (row-major)
+        positions = {
+            sid: (idx // num_cols, idx % num_cols) for idx, sid in enumerate(sample_ids)
+        }
+    else:
+        num_rows, num_cols, positions = infer_grid_from_id_list(sample_ids)
+
+    if num_rows == 0 or num_cols == 0:
+        logger.warning("Could not determine grid dimensions for mosaic")
+        return None
+
+    # Check if we have all patches
+    available_ids = set(patches.keys()) & set(sample_ids)
+    if len(available_ids) < len(sample_ids):
+        logger.warning(
+            "Missing %d patches for mosaic. Available: %d, Expected: %d",
+            len(sample_ids) - len(available_ids),
+            len(available_ids),
+            len(sample_ids),
+        )
+
+    # Determine if patches are 2D (H, W) or have channels
+    sample_patch = next(iter(patches.values()))
+    if sample_patch.ndim == 2:  # noqa: PLR2004
+        mosaic = np.zeros((num_rows * patch_size, num_cols * patch_size), dtype=sample_patch.dtype)
+    else:
+        # Assume (C, H, W) format
+        num_channels = sample_patch.shape[0]
+        mosaic = np.zeros(
+            (num_channels, num_rows * patch_size, num_cols * patch_size),
+            dtype=sample_patch.dtype,
+        )
+
+    for sample_id in sample_ids:
+        if sample_id not in patches:
+            continue
+        if sample_id not in positions:
+            continue
+
+        row, col = positions[sample_id]
+        patch = patches[sample_id]
+
+        y_start = row * patch_size
+        y_end = y_start + patch_size
+        x_start = col * patch_size
+        x_end = x_start + patch_size
+
+        if patch.ndim == 2:  # noqa: PLR2004
+            mosaic[y_start:y_end, x_start:x_end] = patch
+        else:
+            mosaic[:, y_start:y_end, x_start:x_end] = patch
+
+    logger.info(
+        "Created mosaic of size %s from %d patches (%d rows x %d cols)",
+        mosaic.shape,
+        len(available_ids),
+        num_rows,
+        num_cols,
+    )
+
+    return mosaic
 
 
 def calculate_iou_scores(
@@ -78,9 +229,10 @@ def get_evaluation_metrics_dict(
     """Initialize TorchMetrics for multiclass classification."""
     return {
         "conf_matrix": MulticlassConfusionMatrix(num_classes=num_classes).to(device),
-        "f1": MulticlassF1Score(num_classes=num_classes, average="macro").to(device),
+        "macro_f1": MulticlassF1Score(num_classes=num_classes, average="macro").to(device),
         "f1_per_class": MulticlassF1Score(num_classes=num_classes, average=None).to(device),
-        "accuracy": MulticlassAccuracy(num_classes=num_classes, average="macro").to(
+        "overall_f1": MulticlassF1Score(num_classes=num_classes, average="micro").to(device),
+        "macro_accuracy": MulticlassAccuracy(num_classes=num_classes, average="macro").to(
             device,
         ),
         "overall_accuracy": MulticlassAccuracy(num_classes=num_classes, average="micro").to(
@@ -223,10 +375,11 @@ def _evaluate_batches_temporal(
     num_classes: int,
     evaluation_metrics_dict: dict[str, Metric],
     sample_ids_to_log: set[str],
-) -> tuple[list[float], list[int]]:
+) -> tuple[list[float], list[int], dict[str, np.ndarray]]:
     """Iterate over dataloader for temporal models, update metrics, and collect timing stats."""
     inference_times: list[float] = []
     batch_sizes: list[int] = []
+    collected_patches: dict[str, np.ndarray] = {}
 
     forward_sig = inspect.signature(model.forward)
     supports_pad_mask = "pad_mask" in forward_sig.parameters
@@ -263,10 +416,16 @@ def _evaluate_batches_temporal(
                 if selected_ids:
                     log_prediction_plots(outputs, sample_ids, num_classes, selected_ids)
 
+                    # Collect patches for mosaic
+                    processed_np = processed_outputs.cpu().numpy()
+                    for idx, sample_id in enumerate(sample_ids):
+                        if sample_id in sample_ids_to_log:
+                            collected_patches[sample_id] = processed_np[idx]
+
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    return inference_times, batch_sizes
+    return inference_times, batch_sizes, collected_patches
 
 
 def _evaluate_batches_standard(
@@ -276,10 +435,11 @@ def _evaluate_batches_standard(
     num_classes: int,
     evaluation_metrics_dict: dict[str, Metric],
     sample_ids_to_log: set[str],
-) -> tuple[list[float], list[int]]:
+) -> tuple[list[float], list[int], dict[str, np.ndarray]]:
     """Iterate over dataloader for standard models, update metrics, and collect timing stats."""
     inference_times: list[float] = []
     batch_sizes: list[int] = []
+    collected_patches: dict[str, np.ndarray] = {}
 
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Evaluating", leave=False):
@@ -304,10 +464,16 @@ def _evaluate_batches_standard(
                 if selected_ids:
                     log_prediction_plots(outputs, sample_ids, num_classes, selected_ids)
 
+                    # Collect patches for mosaic
+                    processed_np = processed_outputs.cpu().numpy()
+                    for idx, sample_id in enumerate(sample_ids):
+                        if sample_id in sample_ids_to_log:
+                            collected_patches[sample_id] = processed_np[idx]
+
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    return inference_times, batch_sizes
+    return inference_times, batch_sizes, collected_patches
 
 
 def _finalize_evaluation(
@@ -341,8 +507,9 @@ def _finalize_evaluation(
 
     metrics: dict[str, float] = {
         "miou": miou,
-        "f1": evaluation_metrics_dict["f1"].compute().item(),
-        "accuracy": evaluation_metrics_dict["accuracy"].compute().item(),
+        "macro_f1": evaluation_metrics_dict["macro_f1"].compute().item(),
+        "overall_f1": evaluation_metrics_dict["overall_f1"].compute().item(),
+        "macro_accuracy": evaluation_metrics_dict["macro_accuracy"].compute().item(),
         "overall_accuracy": evaluation_metrics_dict["overall_accuracy"].compute().item(),
         "total_batches_processed": len(inference_times),
     }
@@ -405,6 +572,9 @@ def evaluate(
     warmup_runs: int = 10,
     visualization_labels: dict[str, str] | None = None,
     class_name_mapping: dict[int, str] | None = None,
+    log_mosaic: bool = True,
+    patch_size: int = 512,
+    mosaic_grid_shape: tuple[int, int] | None = None,
 ) -> dict[str, float]:
     """Evaluate model and log metrics and plots.
 
@@ -418,9 +588,14 @@ def evaluate(
         log_confusion_matrix: Whether to log confusion matrix plot and CSV.
         normalize_confusion_matrix: Normalize confusion matrix rows.
         sample_ids_to_plot: Optional list of sample ids for prediction plots.
+            The order should be row-major (left-to-right, top-to-bottom) for mosaic.
         warmup_runs: Warmup forward passes (ignored in timing).
         visualization_labels: Optional dict overriding plot text labels.
         class_name_mapping: Mapping from class index to readable name.
+        log_mosaic: Whether to stitch patches and log mosaic image.
+        patch_size: Size of each patch (assumed square, default 512).
+        mosaic_grid_shape: Optional explicit (rows, cols) for the mosaic grid.
+            If not provided, the shape is inferred from sample_ids_to_plot.
 
     """
     if class_name_mapping is None:
@@ -436,10 +611,12 @@ def evaluate(
     first_batch = next(iter(data_loader))
     is_temporal_model = first_batch[BATCH_INDEX_INPUTS].ndim == TEMPORAL_MODEL_NDIM
 
+    collected_patches: dict[str, np.ndarray] = {}
+
     if is_temporal_model:
         logger.info("Detected temporal model (5D input). Using temporal evaluation.")
         _perform_warmup_temporal(model, device, data_loader, warmup_runs)
-        inference_times, batch_sizes = _evaluate_batches_temporal(
+        inference_times, batch_sizes, collected_patches = _evaluate_batches_temporal(
             model,
             device,
             data_loader,
@@ -450,7 +627,7 @@ def evaluate(
     else:
         logger.info("Detected standard model. Using standard evaluation.")
         _perform_warmup_standard(model, device, data_loader, warmup_runs)
-        inference_times, batch_sizes = _evaluate_batches_standard(
+        inference_times, batch_sizes, collected_patches = _evaluate_batches_standard(
             model,
             device,
             data_loader,
@@ -458,6 +635,18 @@ def evaluate(
             evaluation_metrics_dict,
             sample_ids_to_log,
         )
+
+    # Create and log mosaic if patches were collected
+    if log_mosaic and collected_patches and sample_ids_to_plot:
+        logger.info("Creating mosaic from %d collected patches", len(collected_patches))
+        mosaic = stitch_patches_to_mosaic(
+            collected_patches,
+            sample_ids_to_plot,
+            patch_size=patch_size,
+            grid_shape=mosaic_grid_shape,
+        )
+        if mosaic is not None:
+            log_mosaic_plot(mosaic, name="prediction_mosaic")
 
     logger.info("Finished evaluation")
 

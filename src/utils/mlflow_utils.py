@@ -267,7 +267,7 @@ def log_prediction_plots(
     if not filtered_indices:
         return
 
-    outputs = process_segmentation_tensor(outputs, num_classes=num_classes).cpu().numpy()
+    outputs_np = process_segmentation_tensor(outputs, num_classes=num_classes).cpu().numpy()
     custom_cmap, _ = get_custom_colormap()
 
     with tempfile.TemporaryDirectory() as td:
@@ -275,7 +275,7 @@ def log_prediction_plots(
 
         for idx in filtered_indices:
             sample_id = ids[idx]
-            output = outputs[idx]
+            output = outputs_np[idx]
             safe_id = _sanitize_filename(sample_id)
 
             fig, ax = plt.subplots(figsize=(10, 10))
@@ -287,3 +287,42 @@ def log_prediction_plots(
             plt.close(fig)
 
             mlflow.log_artifact(str(fig_path), artifact_path="plots/prediction")
+
+
+def log_mosaic_plot(
+    mosaic: np.ndarray,
+    name: str = "mosaic",
+    artifact_path: str = "plots/mosaic",
+) -> None:
+    """Log a stitched mosaic image to MLflow.
+
+    Args:
+        mosaic: The stitched mosaic array (H, W) for class predictions.
+        name: Name for the saved artifact file.
+        artifact_path: MLflow artifact path for organization.
+
+    """
+    if mosaic is None:
+        logger.warning("Mosaic is None, skipping logging")
+        return
+
+    custom_cmap, custom_norm = get_custom_colormap()
+
+    # Calculate figure size based on mosaic dimensions
+    # Using a reasonable DPI that keeps files manageable
+    height, width = mosaic.shape[-2:]
+    fig_width = width / 100  # 100 pixels per inch for reasonable file size
+    fig_height = height / 100
+
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    ax.imshow(mosaic, cmap=custom_cmap, norm=custom_norm)
+    ax.axis("off")
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        fig_path = td_path / f"{_sanitize_filename(name)}.png"
+        fig.savefig(fig_path, bbox_inches="tight", dpi=150, pad_inches=0)
+        plt.close(fig)
+
+        logger.info("Logging mosaic image to MLflow: %s", fig_path)
+        mlflow.log_artifact(str(fig_path), artifact_path=artifact_path)
