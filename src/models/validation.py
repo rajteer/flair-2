@@ -234,9 +234,7 @@ def _evaluate_batches_temporal(
             pad_mask = batch[BATCH_INDEX_PAD_MASK].to(device)
             batch_positions = batch[BATCH_INDEX_POSITIONS].to(device)
 
-            sample_ids = (
-                batch[BATCH_INDEX_SAMPLE_IDS] if len(batch) > BATCH_INDEX_SAMPLE_IDS else batch[2]
-            )
+            sample_ids = batch[BATCH_INDEX_SAMPLE_IDS]
 
             outputs, batch_time = _forward_with_timing_temporal(
                 model,
@@ -284,9 +282,7 @@ def _evaluate_batches_standard(
             inputs = batch[BATCH_INDEX_INPUTS].to(device)
             targets = batch[BATCH_INDEX_TARGETS].to(device)
 
-            sample_ids = (
-                batch[BATCH_INDEX_SAMPLE_IDS] if len(batch) > BATCH_INDEX_SAMPLE_IDS else batch[2]
-            )
+            sample_ids = batch[BATCH_INDEX_SAMPLE_IDS]
 
             outputs, batch_time = _forward_with_timing_standard(model, inputs, device)
             inference_times.append(batch_time)

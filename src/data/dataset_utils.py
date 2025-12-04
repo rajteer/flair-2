@@ -47,7 +47,7 @@ def pad_collate_sentinel(
             - mask: Tensor of shape (H, W)
             - sample_id: String identifier
             - month_positions: Tensor of shape (T_i,) with month indices (0-11)
-        pad_value: Value to use for padding temporal dimension (default: 0.0)
+        pad_value: Value to use for padding temporal dimension (default: -1)
 
     Returns:
         Tuple containing:
@@ -58,7 +58,7 @@ def pad_collate_sentinel(
               a padded (invalid) timestep
             - sample_ids: List of sample identifiers
             - batch_positions: Long tensor of shape (B, T_max) with month indices (0-11)
-              padded with 0 for invalid positions
+              padded with pad_value (default: -1) for invalid positions
 
     """
     sentinel_data_list = [item[0] for item in batch]
