@@ -118,7 +118,7 @@ def build_model(
         in_channels=in_channels,
         classes=n_classes,
         activation=activation,
-        dynamic_img_size=dynamic_img_size,
+        # dynamic_img_size=dynamic_img_size,
     )
 
 
