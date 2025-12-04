@@ -12,7 +12,7 @@ import mlflow
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataset_utils import pad_collate_flair
+from src.data.dataset_utils import collate_standard, pad_collate_flair
 from src.data.pre_processing.flair_dataset import FlairDataset
 from src.models.model_builder import (
     build_loss_function,
@@ -183,7 +183,7 @@ class TrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 generator=generator,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_flair if use_sentinel else None,
+                collate_fn=pad_collate_flair if use_sentinel else collate_standard,
             )
 
             val_loader = DataLoader(
@@ -193,7 +193,7 @@ class TrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_flair if use_sentinel else None,
+                collate_fn=pad_collate_flair if use_sentinel else collate_standard,
             )
 
             test_loader = DataLoader(
@@ -203,7 +203,7 @@ class TrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_flair if use_sentinel else None,
+                collate_fn=pad_collate_flair if use_sentinel else collate_standard,
             )
 
             criterion = build_loss_function(

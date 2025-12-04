@@ -140,3 +140,34 @@ def pad_collate_flair(
     )
 
     return padded_sentinel, masks, pad_mask, sample_ids, batch_positions
+
+
+def collate_standard(
+    batch: list[tuple[torch.Tensor, torch.Tensor, str]],
+) -> tuple[torch.Tensor, torch.Tensor, None, list[str], None]:
+    """Collate function for FlairDataset without Sentinel-2 data.
+
+    When use_sentinel=False, FlairDataset returns (aerial_img, mask, sample_id).
+    This collate function stacks the tensors and returns a tuple with the same
+    structure as the Sentinel collate functions for consistency.
+
+    Args:
+        batch: List of tuples (aerial_img, mask, sample_id) where:
+            - aerial_img: Tensor of shape (C, H, W)
+            - mask: Tensor of shape (H, W)
+            - sample_id: String identifier
+
+    Returns:
+        Tuple containing:
+            - images: Tensor of shape (B, C, H, W) - model input
+            - masks: Tensor of shape (B, H, W) - targets
+            - pad_mask: None (not used for standard models)
+            - sample_ids: List of sample identifiers
+            - batch_positions: None (not used for standard models)
+
+    """
+    images = torch.stack([item[0] for item in batch])
+    masks = torch.stack([item[1] for item in batch])
+    sample_ids = [item[2] for item in batch]
+
+    return images, masks, None, sample_ids, None
