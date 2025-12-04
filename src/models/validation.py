@@ -79,7 +79,11 @@ def get_evaluation_metrics_dict(
     return {
         "conf_matrix": MulticlassConfusionMatrix(num_classes=num_classes).to(device),
         "f1": MulticlassF1Score(num_classes=num_classes, average="macro").to(device),
+        "f1_per_class": MulticlassF1Score(num_classes=num_classes, average=None).to(device),
         "accuracy": MulticlassAccuracy(num_classes=num_classes, average="macro").to(
+            device,
+        ),
+        "overall_accuracy": MulticlassAccuracy(num_classes=num_classes, average="micro").to(
             device,
         ),
     }
@@ -327,10 +331,19 @@ def _finalize_evaluation(
     )
     timing_metrics = compute_timing_metrics(inference_times, batch_sizes)
 
+    # Compute per-class F1 scores
+    f1_per_class_tensor = evaluation_metrics_dict["f1_per_class"].compute()
+    per_class_f1 = {
+        i: f1_per_class_tensor[i].item()
+        for i in range(len(class_name_mapping))
+        if i != confusion_other_index
+    }
+
     metrics: dict[str, float] = {
         "miou": miou,
         "f1": evaluation_metrics_dict["f1"].compute().item(),
         "accuracy": evaluation_metrics_dict["accuracy"].compute().item(),
+        "overall_accuracy": evaluation_metrics_dict["overall_accuracy"].compute().item(),
         "total_batches_processed": len(inference_times),
     }
     metrics.update(timing_metrics)
@@ -339,6 +352,12 @@ def _finalize_evaluation(
         f"iou_class_{class_name_mapping.get(i, f'class_{i}')}": v for i, v in per_class_iou.items()
     }
     metrics.update(per_class_metrics)
+
+    # Add per-class F1 scores to metrics
+    per_class_f1_metrics = {
+        f"f1_class_{class_name_mapping.get(i, f'class_{i}')}": v for i, v in per_class_f1.items()
+    }
+    metrics.update(per_class_f1_metrics)
 
     if log_eval_metrics:
         log_metrics_to_mlflow(metrics)
