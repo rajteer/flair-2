@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -49,10 +50,7 @@ def get_path_mapping(directory: Path, pattern: str) -> dict[str, Path]:
         A dictionary mapping unique IDs to file paths
 
     """
-    return {
-        get_unique_id(path.name): path
-        for path in sorted(directory.rglob(pattern))
-    }
+    return {get_unique_id(path.name): path for path in sorted(directory.rglob(pattern))}
 
 
 def load_centroids_mapping(centroids_path: str | Path) -> dict[str, tuple[int, int]]:
@@ -157,6 +155,32 @@ def parse_sentinel_date(product_name: str) -> tuple[int, int]:
     return year, month
 
 
+def parse_sentinel_day_of_year(product_name: str) -> int:
+    """Parse day-of-year (0-365) from Sentinel-2 product name.
+
+    Args:
+        product_name: Sentinel-2 product name (e.g., "S2B_MSIL2A_20210114T103309_...")
+
+    Returns:
+        Day of year (0-365, where Jan 1 = 0)
+
+    Raises:
+        ValueError: If date cannot be parsed from product name
+
+    """
+    match = re.search(r"_(\d{8})T", product_name)
+    if match is None:
+        msg = f"Could not extract date from product name: {product_name}"
+        raise ValueError(msg)
+
+    date_str = match.group(1)
+    year = int(date_str[:4])
+    month = int(date_str[4:6])
+    day = int(date_str[6:8])
+
+    return date(year, month, day).timetuple().tm_yday - 1
+
+
 def load_sentinel_dates(dates_path: Path) -> list[str]:
     """Load Sentinel-2 product dates for a domain/zone.
 
@@ -213,7 +237,7 @@ def compute_monthly_averages(
     product_names: list[str],
     cloud_snow_cover_threshold: float = 0.6,
     cloud_snow_prob_threshold: int = 50,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, list[int]]:
     """Compute monthly averages from cloudless Sentinel-2 timesteps.
 
     Following the FLAIR-2 paper strategy: compute monthly average using
@@ -231,7 +255,7 @@ def compute_monthly_averages(
     Returns:
         Tuple of:
         - Monthly averaged Sentinel-2 data with shape (M, C, H, W) where M <= 12
-        - Monthly averaged masks with shape (M, 2, H, W)
+        - List of month indices (0-11) corresponding to each averaged timestep
 
     """
     monthly_timesteps = defaultdict(list)
@@ -261,23 +285,25 @@ def compute_monthly_averages(
         if cloudless_timesteps:
             monthly_cloudless[(year, month)] = cloudless_timesteps
 
+    # Fallback: if no cloudless timesteps found, use all timesteps grouped by month
+    if not monthly_cloudless:
+        monthly_cloudless = dict(monthly_timesteps)
+
     sorted_months = sorted(monthly_cloudless.keys())
     monthly_data_list = []
-    monthly_masks_list = []
+    month_indices = []
 
     for year_month in sorted_months:
         timesteps = monthly_cloudless[year_month]
+        year, month = year_month
 
         month_data = np.mean(sentinel_patch[timesteps], axis=0)
         monthly_data_list.append(month_data)
-
-        month_masks = np.mean(masks_patch[timesteps], axis=0)
-        monthly_masks_list.append(month_masks)
+        month_indices.append(month - 1)  # Convert 1-12 to 0-11
 
     monthly_data = np.stack(monthly_data_list, axis=0)  # Shape: (M, C, H, W)
-    monthly_masks = np.stack(monthly_masks_list, axis=0)  # Shape: (M, 2, H, W)
 
-    return monthly_data, monthly_masks
+    return monthly_data, month_indices
 
 
 def extract_sentinel_patch(

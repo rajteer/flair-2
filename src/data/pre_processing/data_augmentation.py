@@ -90,7 +90,7 @@ class FlairAugmentation:
         return image, mask
 
     def __call__(
-        self, images: torch.Tensor, masks: torch.Tensor
+        self, images: torch.Tensor, masks: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # batch or single sample support
         if images.dim() == 4:  # batch (B,C,H,W)

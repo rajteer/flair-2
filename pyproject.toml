@@ -13,6 +13,7 @@ dependencies = [
     "segmentation-models-pytorch>=0.5.0",
     "tifffile>=2025.10.4",
     "torch>=2.8.0",
+    "einops>=0.8.1",
     "torchinfo>=1.8.0",
     "torchmetrics>=1.8.2",
     "tqdm>=4.67.1",
@@ -26,7 +27,7 @@ authors = [
 license = {text = "MIT"}
 
 [project.scripts]
-flair-train = "pipeline.pipeline:main"
+flair-train = "src.pipeline.pipeline:main"
 
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["torch"]
@@ -66,12 +67,6 @@ ignore = [
 
 [tool.uv]
 package = true
-
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

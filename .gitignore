@@ -1,5 +1,7 @@
 # Data and notebooks
 data/
+data/
+!src/data/
 notebooks/
 
 # Logging files

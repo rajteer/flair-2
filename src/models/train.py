@@ -1,3 +1,4 @@
+import inspect
 import io
 import logging
 import tempfile
@@ -71,13 +72,13 @@ def _log_model_description(
     mlflow.log_artifact(tmp_path, "model_architecture")
     Path(tmp_path).unlink()
 
-    if len(sample_input_shape) != TEMPORAL_MODEL_NDIM:
-        complexity = compute_model_complexity(
-            model=model,
-            input_size=sample_input_shape,
-        )
-        for k, v in complexity.items():
-            mlflow.log_metric(k, float(v))
+    complexity = compute_model_complexity(
+        model=model,
+        input_size=sample_input_shape,
+        batch_positions=batch_positions,
+    )
+    for k, v in complexity.items():
+        mlflow.log_metric(k, float(v))
 
 
 def _get_sample_batch(
@@ -86,44 +87,39 @@ def _get_sample_batch(
     """Return the first batch's inputs and optional temporal positions."""
     batch = next(iter(loader))
     inputs = batch[BATCH_INDEX_INPUTS]
-    batch_positions = (
-        batch[BATCH_INDEX_POSITIONS] if len(batch) > BATCH_INDEX_POSITIONS else None
-    )
+    batch_positions = batch[BATCH_INDEX_POSITIONS] if len(batch) > BATCH_INDEX_POSITIONS else None
     return inputs, batch_positions
 
 
-def _train_epoch(
+def _train_epoch_temporal(
     model: torch.nn.Module,
     loader: torch.utils.data.DataLoader,
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    augmenter: FlairAugmentation | None = None,
 ) -> float:
-    """Train the model for a single epoch and return average loss."""
+    """Train a temporal model for a single epoch and return average loss.
+
+    Temporal models receive batch_positions and pad_mask arguments.
+    Note: Augmentations are not supported for temporal (5D) data.
+    """
     model.train()
     total_loss = 0.0
+
+    forward_sig = inspect.signature(model.forward)
+    supports_pad_mask = "pad_mask" in forward_sig.parameters
 
     for batch_data in loader:
         x = batch_data[BATCH_INDEX_INPUTS].to(device)
         y = batch_data[BATCH_INDEX_TARGETS].to(device)
-
-        batch_positions = (
-            batch_data[BATCH_INDEX_POSITIONS].to(device)
-            if len(batch_data) > BATCH_INDEX_POSITIONS
-            else None
-        )
-
-        if augmenter is not None:
-            x, y = augmenter(x, y)
+        pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
+        batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
         optimizer.zero_grad()
-
-        if x.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-            outputs = model(x, batch_positions=batch_positions)
+        if supports_pad_mask:
+            outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
         else:
-            outputs = model(x)
-
+            outputs = model(x, batch_positions=batch_positions)
         loss = criterion(outputs, y)
         loss.backward()
         optimizer.step()
@@ -132,13 +128,74 @@ def _train_epoch(
     return total_loss / len(loader)
 
 
-def _validate_epoch(
+def _train_epoch_standard(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    augmenter: FlairAugmentation | None = None,
+) -> float:
+    """Train a standard (non-temporal) model for a single epoch and return average loss."""
+    model.train()
+    total_loss = 0.0
+
+    for batch_data in loader:
+        x = batch_data[BATCH_INDEX_INPUTS].to(device)
+        y = batch_data[BATCH_INDEX_TARGETS].to(device)
+
+        if augmenter is not None:
+            x, y = augmenter(x, y)
+
+        optimizer.zero_grad()
+        outputs = model(x)
+        loss = criterion(outputs, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += float(loss.item())
+
+    return total_loss / len(loader)
+
+
+def _validate_epoch_temporal(
     model: torch.nn.Module,
     loader: torch.utils.data.DataLoader,
     criterion: torch.nn.Module,
     device: torch.device,
 ) -> float:
-    """Validate the model for a single epoch and return average loss."""
+    """Validate a temporal model for a single epoch and return average loss.
+
+    Temporal models receive batch_positions and pad_mask arguments.
+    """
+    model.eval()
+    val_loss = 0.0
+
+    forward_sig = inspect.signature(model.forward)
+    supports_pad_mask = "pad_mask" in forward_sig.parameters
+
+    with torch.no_grad():
+        for batch_data in loader:
+            x = batch_data[BATCH_INDEX_INPUTS].to(device)
+            y = batch_data[BATCH_INDEX_TARGETS].to(device)
+            pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
+            batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
+
+            if supports_pad_mask:
+                outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+            else:
+                outputs = model(x, batch_positions=batch_positions)
+            loss = criterion(outputs, y)
+            val_loss += float(loss.item())
+    return val_loss / len(loader)
+
+
+def _validate_epoch_standard(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+) -> float:
+    """Validate a standard (non-temporal) model for a single epoch and return average loss."""
     model.eval()
     val_loss = 0.0
     with torch.no_grad():
@@ -146,17 +203,7 @@ def _validate_epoch(
             x = batch_data[BATCH_INDEX_INPUTS].to(device)
             y = batch_data[BATCH_INDEX_TARGETS].to(device)
 
-            batch_positions = (
-                batch_data[BATCH_INDEX_POSITIONS].to(device)
-                if len(batch_data) > BATCH_INDEX_POSITIONS
-                else None
-            )
-
-            if x.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-                outputs = model(x, batch_positions=batch_positions)
-            else:
-                outputs = model(x)
-
+            outputs = model(x)
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
     return val_loss / len(loader)
@@ -239,19 +286,39 @@ def train(
     )
     best_model_state = None
 
+    is_temporal_model = sample_inputs.ndim == TEMPORAL_MODEL_NDIM
+
+    if is_temporal_model:
+        logger.info("Detected temporal model (5D input). Using temporal training loop.")
+        train_epoch_fn = _train_epoch_temporal
+        validate_epoch_fn = _validate_epoch_temporal
+    else:
+        logger.info("Detected standard model. Using standard training loop.")
+        train_epoch_fn = _train_epoch_standard
+        validate_epoch_fn = _validate_epoch_standard
+
     for epoch in range(epochs):
-        loss_epoch = _train_epoch(
-            model,
-            train_loader,
-            criterion,
-            optimizer,
-            device,
-            augmenter,
-        )
+        if is_temporal_model:
+            loss_epoch = train_epoch_fn(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+            )
+        else:
+            loss_epoch = train_epoch_fn(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+                augmenter,
+            )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
 
-        val_loss = _validate_epoch(model, val_loader, criterion, device)
+        val_loss = validate_epoch_fn(model, val_loader, criterion, device)
         losses_val.append(val_loss)
         logger.info("Epoch %d/%d: Validation Loss: %.4f", epoch + 1, epochs, val_loss)
 
