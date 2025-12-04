@@ -1,3 +1,4 @@
+import inspect
 import io
 import logging
 import tempfile
@@ -74,6 +75,7 @@ def _log_model_description(
     complexity = compute_model_complexity(
         model=model,
         input_size=sample_input_shape,
+        batch_positions=batch_positions,
     )
     for k, v in complexity.items():
         mlflow.log_metric(k, float(v))
@@ -104,6 +106,9 @@ def _train_epoch_temporal(
     model.train()
     total_loss = 0.0
 
+    forward_sig = inspect.signature(model.forward)
+    supports_pad_mask = "pad_mask" in forward_sig.parameters
+
     for batch_data in loader:
         x = batch_data[BATCH_INDEX_INPUTS].to(device)
         y = batch_data[BATCH_INDEX_TARGETS].to(device)
@@ -111,7 +116,10 @@ def _train_epoch_temporal(
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
         optimizer.zero_grad()
-        outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+        if supports_pad_mask:
+            outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+        else:
+            outputs = model(x, batch_positions=batch_positions)
         loss = criterion(outputs, y)
         loss.backward()
         optimizer.step()
@@ -161,6 +169,10 @@ def _validate_epoch_temporal(
     """
     model.eval()
     val_loss = 0.0
+
+    forward_sig = inspect.signature(model.forward)
+    supports_pad_mask = "pad_mask" in forward_sig.parameters
+
     with torch.no_grad():
         for batch_data in loader:
             x = batch_data[BATCH_INDEX_INPUTS].to(device)
@@ -168,7 +180,10 @@ def _validate_epoch_temporal(
             pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
             batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
-            outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+            if supports_pad_mask:
+                outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+            else:
+                outputs = model(x, batch_positions=batch_positions)
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
     return val_loss / len(loader)

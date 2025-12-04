@@ -1,3 +1,4 @@
+import inspect
 import logging
 import time
 
@@ -112,6 +113,9 @@ def _perform_warmup_temporal(
     if warmup_runs <= 0:
         return
 
+    forward_sig = inspect.signature(model.forward)
+    supports_pad_mask = "pad_mask" in forward_sig.parameters
+
     logger.info("Performing %d warmup runs (temporal model)...", warmup_runs)
     with torch.no_grad():
         for warmup_count, batch in enumerate(data_loader):
@@ -121,7 +125,10 @@ def _perform_warmup_temporal(
             pad_mask = batch[BATCH_INDEX_PAD_MASK].to(device)
             batch_positions = batch[BATCH_INDEX_POSITIONS].to(device)
 
-            _ = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+            if supports_pad_mask:
+                _ = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+            else:
+                _ = model(inputs, batch_positions=batch_positions)
 
             if device.type == "cuda":
                 torch.cuda.synchronize()
@@ -157,19 +164,27 @@ def _forward_with_timing_temporal(
     device: torch.device,
     batch_positions: torch.Tensor,
     pad_mask: torch.Tensor,
+    *,
+    supports_pad_mask: bool = True,
 ) -> tuple[torch.Tensor, float]:
     """Run a forward pass for temporal models and measure its duration."""
     if torch.cuda.is_available() and device.type == "cuda":
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         start_event.record()
-        outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+        if supports_pad_mask:
+            outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+        else:
+            outputs = model(inputs, batch_positions=batch_positions)
         end_event.record()
         torch.cuda.synchronize()
         batch_time = start_event.elapsed_time(end_event) / 1000.0
     else:
         start = time.perf_counter()
-        outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+        if supports_pad_mask:
+            outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+        else:
+            outputs = model(inputs, batch_positions=batch_positions)
         batch_time = time.perf_counter() - start
 
     return outputs, batch_time
@@ -209,6 +224,9 @@ def _evaluate_batches_temporal(
     inference_times: list[float] = []
     batch_sizes: list[int] = []
 
+    forward_sig = inspect.signature(model.forward)
+    supports_pad_mask = "pad_mask" in forward_sig.parameters
+
     with torch.no_grad():
         for batch in tqdm(data_loader, desc="Evaluating", leave=False):
             inputs = batch[BATCH_INDEX_INPUTS].to(device)
@@ -226,6 +244,7 @@ def _evaluate_batches_temporal(
                 device,
                 batch_positions,
                 pad_mask,
+                supports_pad_mask=supports_pad_mask,
             )
             inference_times.append(batch_time)
             batch_sizes.append(inputs.shape[0])
