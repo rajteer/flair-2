@@ -305,25 +305,31 @@ class TSViT(nn.Module):
         """Prepare temporal position encodings using one-hot + linear projection.
 
         Args:
-            batch_positions: Optional (B, T) tensor with position indices (DOY or month)
-            batch_size: Batch size
-            time: Sequence length
-            device: Device to create tensors on
+            batch_positions: Optional (B, T) tensor with position indices (DOY or month).
+                Negative values are treated as padding and mapped to a dedicated
+                pad index (``max_seq_len - 1``).
+            batch_size: Batch size.
+            time: Sequence length.
+            device: Device to create tensors on.
 
         Returns:
-            One-hot encoded and projected position embeddings (B, T, dim)
+            One-hot encoded and projected position embeddings (B, T, dim).
 
         """
         if batch_positions is None:
             batch_positions = torch.arange(time, device=device).unsqueeze(0)
             batch_positions = batch_positions.repeat(batch_size, 1)
 
-        # Clamp to valid range [0, max_seq_len-1]
-        batch_positions = batch_positions.clamp(min=0, max=self.max_seq_len - 1)
+        pad_index = self.max_seq_len - 1
+        batch_positions = batch_positions.long()
+
+        is_pad = batch_positions < 0
+        batch_positions = batch_positions.clamp(min=0, max=pad_index - 1)
+        batch_positions[is_pad] = pad_index
 
         # One-hot encode the positions (B, T, max_seq_len)
         positions_one_hot = torch_functional.one_hot(
-            batch_positions.long(),
+            batch_positions,
             num_classes=self.max_seq_len,
         ).float()
 

@@ -71,13 +71,12 @@ def _log_model_description(
     mlflow.log_artifact(tmp_path, "model_architecture")
     Path(tmp_path).unlink()
 
-    if len(sample_input_shape) != TEMPORAL_MODEL_NDIM:
-        complexity = compute_model_complexity(
-            model=model,
-            input_size=sample_input_shape,
-        )
-        for k, v in complexity.items():
-            mlflow.log_metric(k, float(v))
+    complexity = compute_model_complexity(
+        model=model,
+        input_size=sample_input_shape,
+    )
+    for k, v in complexity.items():
+        mlflow.log_metric(k, float(v))
 
 
 def _get_sample_batch(
@@ -96,11 +95,11 @@ def _train_epoch_temporal(
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    augmenter: FlairAugmentation | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
-    
+
     Temporal models receive batch_positions and pad_mask arguments.
+    Note: Augmentations are not supported for temporal (5D) data.
     """
     model.train()
     total_loss = 0.0
@@ -110,9 +109,6 @@ def _train_epoch_temporal(
         y = batch_data[BATCH_INDEX_TARGETS].to(device)
         pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
-
-        if augmenter is not None:
-            x, y = augmenter(x, y)
 
         optimizer.zero_grad()
         outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
@@ -275,9 +271,8 @@ def train(
     )
     best_model_state = None
 
-    # Determine if model uses temporal inputs
     is_temporal_model = sample_inputs.ndim == TEMPORAL_MODEL_NDIM
-    
+
     if is_temporal_model:
         logger.info("Detected temporal model (5D input). Using temporal training loop.")
         train_epoch_fn = _train_epoch_temporal
@@ -288,14 +283,23 @@ def train(
         validate_epoch_fn = _validate_epoch_standard
 
     for epoch in range(epochs):
-        loss_epoch = train_epoch_fn(
-            model,
-            train_loader,
-            criterion,
-            optimizer,
-            device,
-            augmenter,
-        )
+        if is_temporal_model:
+            loss_epoch = train_epoch_fn(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+            )
+        else:
+            loss_epoch = train_epoch_fn(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+                augmenter,
+            )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
 
