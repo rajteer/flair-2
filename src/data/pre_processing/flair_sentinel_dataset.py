@@ -249,7 +249,7 @@ class FlairSentinelDataset(Dataset):
         """
         class_counts = torch.zeros(self.num_classes, dtype=torch.int64)
         for idx in tqdm(range(len(self)), desc="Computing class counts"):
-            _, mask, _, _= self[idx]
+            _, mask, _, _ = self[idx]
             counts = torch.bincount(mask.flatten(), minlength=self.num_classes)
             class_counts += counts
 

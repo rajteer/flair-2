@@ -32,7 +32,7 @@ def pad_tensor(
 def pad_collate_sentinel(
     batch: list[tuple[torch.Tensor, torch.Tensor, str, torch.Tensor]],
     pad_value: float = -1,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor,  list[str], torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[str], torch.Tensor]:
     """Collate function for batching Sentinel-2 samples with variable temporal dimensions.
 
     This function handles samples with different numbers of timesteps (T) by padding
@@ -71,7 +71,7 @@ def pad_collate_sentinel(
 
     padded_sentinel_list = []
     padded_positions_list = []
-    for data, positions in zip(sentinel_data_list, month_positions_list):
+    for data, positions in zip(sentinel_data_list, month_positions_list, strict=False):
         padded_data = pad_tensor(data, max_temporal_length, pad_value=pad_value)
         padded_sentinel_list.append(padded_data)
 
@@ -136,9 +136,7 @@ def pad_collate_flair(
             pad_mask[i, original_length:] = True
 
     batch_positions = (
-        torch.arange(max_temporal_length, dtype=torch.long)
-        .unsqueeze(0)
-        .expand(len(batch), -1)
+        torch.arange(max_temporal_length, dtype=torch.long).unsqueeze(0).expand(len(batch), -1)
     )
 
     return padded_sentinel, masks, pad_mask, sample_ids, batch_positions

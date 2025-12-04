@@ -134,7 +134,6 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
             mlflow.set_tag("data_type", "sentinel_2_only")
 
-
             test_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["test"]["masks"],
                 sentinel_dir=config["data"]["test"]["sentinel"],

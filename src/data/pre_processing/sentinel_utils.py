@@ -50,10 +50,7 @@ def get_path_mapping(directory: Path, pattern: str) -> dict[str, Path]:
         A dictionary mapping unique IDs to file paths
 
     """
-    return {
-        get_unique_id(path.name): path
-        for path in sorted(directory.rglob(pattern))
-    }
+    return {get_unique_id(path.name): path for path in sorted(directory.rglob(pattern))}
 
 
 def load_centroids_mapping(centroids_path: str | Path) -> dict[str, tuple[int, int]]:
