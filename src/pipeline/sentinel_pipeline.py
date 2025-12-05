@@ -270,6 +270,45 @@ class SentinelTrainEvalPipeline:
                     "Unsupported visualization.language '%s'. No class name mapping will be used.",
                     labels_language,
                 )
+
+            # Create zone-specific dataloader if zone mosaic is enabled
+            zone_data_loader = None
+            zone_mosaic_cfg = config.get("evaluation", {}).get("zone_mosaic")
+            if zone_mosaic_cfg and zone_mosaic_cfg.get("enabled", False):
+                zone_mask_dir = zone_mosaic_cfg.get("mask_dir")
+                zone_sentinel_dir = zone_mosaic_cfg.get("sentinel_dir")
+
+                if zone_mask_dir and zone_sentinel_dir:
+                    logger.info("Creating zone dataloader for mosaic: %s", zone_mask_dir)
+                    zone_dataset = FlairSentinelDataset(
+                        mask_dir=zone_mask_dir,
+                        sentinel_dir=zone_sentinel_dir,
+                        centroids_path=config["data"]["centroids_path"],
+                        num_classes=config["data"]["num_classes"],
+                        sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                        use_monthly_average=config["data"].get("use_monthly_average", True),
+                        cloud_snow_cover_threshold=config["data"].get(
+                            "cloud_snow_cover_threshold",
+                            0.6,
+                        ),
+                        cloud_snow_prob_threshold=config["data"].get(
+                            "cloud_snow_prob_threshold",
+                            50,
+                        ),
+                        sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                    )
+                    zone_data_loader = DataLoader(
+                        zone_dataset,
+                        batch_size=config["data"]["batch_size"],
+                        shuffle=False,
+                        num_workers=num_workers,
+                        collate_fn=pad_collate_sentinel,
+                    )
+                else:
+                    logger.warning(
+                        "Zone mosaic enabled but mask_dir or sentinel_dir not provided.",
+                    )
+
             test_metrics = evaluate(
                 model=model,
                 device=device,
@@ -280,6 +319,8 @@ class SentinelTrainEvalPipeline:
                 log_confusion_matrix=config["evaluation"]["log_confusion_matrix"],
                 sample_ids_to_plot=config["evaluation"]["log_sample_ids"],
                 visualization_labels=visualization_labels,
+                zone_mosaic_config=zone_mosaic_cfg,
+                zone_data_loader=zone_data_loader,
             )
 
             logger.info("Test Metrics:")
