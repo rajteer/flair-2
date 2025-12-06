@@ -6,7 +6,7 @@ from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
-from src.models.losses import CombinedDiceFocalLoss
+from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
 from src.models.tsvit import TSViT
 
 
@@ -118,7 +118,6 @@ def build_model(
         in_channels=in_channels,
         classes=n_classes,
         activation=activation,
-        # dynamic_img_size=dynamic_img_size,
     )
 
 
@@ -188,6 +187,8 @@ def build_loss_function(
 
     if loss_type == "CombinedDiceFocalLoss":
         return CombinedDiceFocalLoss(**kwargs)
+    if loss_type == "WeightedCrossEntropyDiceLoss":
+        return WeightedCrossEntropyDiceLoss(**kwargs)
 
     try:
         if hasattr(smp.losses, loss_type):
