@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 import torch
+from torch import Tensor
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -22,6 +23,80 @@ from .sentinel_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MultiChannelNormalize:
+    """Normalize multi-channel aerial imagery with per-channel stats.
+
+    This transform expects an input tensor of shape (C, H, W).
+
+    Typical usage for 5 channels [R, G, B, NIR, elevation]:
+
+    - RGB channels use ImageNet mean/std in [0, 1]
+    - NIR and elevation use user-provided statistics
+
+    Args:
+        mean: Per-channel mean values.
+        std: Per-channel standard deviation values.
+        scale_to_unit: Optional boolean mask (length C). For channels where the
+            mask is True, values are assumed to be in [0, 255] and will be
+            divided by 255 before normalization.
+        elevation_range: Optional (min, max) tuple specifying raw elevation
+            range. If provided, the elevation channel will be scaled to
+            [0, 1] using this range before applying mean/std. This should be
+            consistent with one of the channels in ``mean`` / ``std``.
+
+    """
+
+    def __init__(
+        self,
+        mean: list[float] | tuple[float, ...],
+        std: list[float] | tuple[float, ...],
+        scale_to_unit: list[bool] | tuple[bool, ...] | None = None,
+        elevation_range: tuple[float, float] | None = None,
+        elevation_channel_index: int | None = None,
+    ) -> None:
+        if len(mean) != len(std):
+            msg = "mean and std must have the same length"
+            raise ValueError(msg)
+
+        self.mean = torch.tensor(mean).view(-1, 1, 1)
+        self.std = torch.tensor(std).view(-1, 1, 1)
+
+        if scale_to_unit is not None:
+            if len(scale_to_unit) != len(mean):
+                msg = "scale_to_unit must have the same length as mean/std"
+                raise ValueError(msg)
+            self.scale_to_unit = torch.tensor(scale_to_unit, dtype=torch.bool)
+        else:
+            self.scale_to_unit = None
+
+        if (elevation_range is None) != (elevation_channel_index is None):
+            msg = "Both elevation_range and elevation_channel_index must be provided together or omitted."
+            raise ValueError(msg)
+
+        self.elevation_range = elevation_range
+        self.elevation_channel_index = elevation_channel_index
+
+    def __call__(self, img: Tensor) -> Tensor:
+        if img.ndim != 3:  # (C, H, W)
+            msg = "MultiChannelNormalize expects tensor of shape (C, H, W)"
+            raise ValueError(msg)
+
+        img = img.float().clone()
+
+        if self.scale_to_unit is not None:
+            img[self.scale_to_unit, ...] = img[self.scale_to_unit, ...] / 255.0
+
+        if self.elevation_range is not None and self.elevation_channel_index is not None:
+            elev_min, elev_max = self.elevation_range
+            if elev_max <= elev_min:
+                msg = "elevation_range must satisfy max > min"
+                raise ValueError(msg)
+            c = self.elevation_channel_index
+            img[c] = (img[c] - elev_min) / (elev_max - elev_min)
+
+        return (img - self.mean) / self.std
 
 
 class FlairDataset(Dataset):
@@ -213,7 +288,7 @@ class FlairDataset(Dataset):
         centroid_x, centroid_y = self.centroids_mapping[img_filename]
 
         sp_data_path = self.sentinel_data_dict[domain_zone]
-        sp_data = np.load(sp_data_path)  # Shape: (T, C, H, W)
+        sp_data = np.load(sp_data_path, mmap_mode="r")  # Shape: (T, C, H, W)
 
         sentinel_patch = extract_sentinel_patch(
             sp_data,
@@ -231,7 +306,7 @@ class FlairDataset(Dataset):
                 msg = f"Sentinel masks not found for {domain_zone}"
                 raise ValueError(msg)
 
-            sp_masks = np.load(sp_masks_path)  # Shape: (T, 2, H, W)
+            sp_masks = np.load(sp_masks_path, mmap_mode="r")  # Shape: (T, 2, H, W)
 
             masks_patch = extract_sentinel_patch(
                 sp_masks,

@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.dataset_utils import collate_standard, pad_collate_flair
-from src.data.pre_processing.flair_dataset import FlairDataset
+from src.data.pre_processing.flair_dataset import FlairDataset, MultiChannelNormalize
 from src.models.model_builder import (
     build_loss_function,
     build_lr_scheduler,
@@ -99,11 +99,17 @@ class TrainEvalPipeline:
                     "weight_decay": config["training"]["optimizer"]["weight_decay"],
                     "epochs": config["training"]["epochs"],
                     "patience": config["training"]["early_stopping_patience"],
-                    "lr_scheduler": config["training"]["optimizer"].get("lr_scheduler", {}).get("type", "None"),
+                    "lr_scheduler": config["training"]["optimizer"]
+                    .get("lr_scheduler", {})
+                    .get("type", "None"),
                 },
             )
 
-            if scheduler_args := config["training"]["optimizer"].get("lr_scheduler", {}).get("args"):
+            if (
+                scheduler_args := config["training"]["optimizer"]
+                .get("lr_scheduler", {})
+                .get("args")
+            ):
                 mlflow.log_param("lr_scheduler_args", json.dumps(scheduler_args))
 
             mlflow.log_params(
@@ -118,6 +124,19 @@ class TrainEvalPipeline:
                 mlflow.set_tag("note", note)
 
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
+
+            norm_cfg = config["data"].get("normalization")
+            image_transform = None
+            if norm_cfg is not None:
+                image_transform = MultiChannelNormalize(
+                    mean=norm_cfg["mean"],
+                    std=norm_cfg["std"],
+                    scale_to_unit=norm_cfg.get("scale_to_unit"),
+                    elevation_range=tuple(norm_cfg["elevation_range"])
+                    if norm_cfg.get("elevation_range") is not None
+                    else None,
+                    elevation_channel_index=norm_cfg.get("elevation_channel_index"),
+                )
 
             use_sentinel = config["data"].get("use_sentinel", False)
             sentinel_config = {
@@ -150,6 +169,7 @@ class TrainEvalPipeline:
                 mask_dir=config["data"]["test"]["masks"],
                 sentinel_dir=config["data"]["test"].get("sentinel") if use_sentinel else None,
                 num_classes=config["data"]["num_classes"],
+                image_transform=image_transform,
                 selected_channels=config["data"]["selected_channels"],
                 **sentinel_config,
             )
@@ -159,6 +179,7 @@ class TrainEvalPipeline:
                 mask_dir=config["data"]["train"]["masks"],
                 sentinel_dir=config["data"]["train"].get("sentinel") if use_sentinel else None,
                 num_classes=config["data"]["num_classes"],
+                image_transform=image_transform,
                 selected_channels=config["data"]["selected_channels"],
                 **sentinel_config,
             )
@@ -168,6 +189,7 @@ class TrainEvalPipeline:
                 mask_dir=config["data"]["val"]["masks"],
                 sentinel_dir=config["data"]["val"].get("sentinel") if use_sentinel else None,
                 num_classes=config["data"]["num_classes"],
+                image_transform=image_transform,
                 selected_channels=config["data"]["selected_channels"],
                 **sentinel_config,
             )
@@ -289,6 +311,7 @@ class TrainEvalPipeline:
                         mask_dir=zone_mask_dir,
                         sentinel_dir=zone_mosaic_cfg.get("sentinel_dir") if use_sentinel else None,
                         num_classes=config["data"]["num_classes"],
+                        image_transform=image_transform,
                         selected_channels=config["data"]["selected_channels"],
                         **sentinel_config,
                     )
