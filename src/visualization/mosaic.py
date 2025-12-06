@@ -188,4 +188,3 @@ def log_prediction_mosaic_to_mlflow(
 
         logger.info("Logging prediction mosaic to MLflow: %s", zone_name)
         mlflow.log_artifact(str(fig_path), artifact_path=artifact_path)
-
