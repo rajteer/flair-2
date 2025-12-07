@@ -7,7 +7,9 @@ from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
+from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
 from src.models.tsvit import TSViT
+from src.models.unetformer import UNetFormer
 
 
 def build_model(
@@ -104,6 +106,38 @@ def build_model(
             dropout=float(tsvit_config.get("dropout", 0.0)),
             emb_dropout=float(tsvit_config.get("emb_dropout", 0.0)),
             temporal_metadata_channels=int(tsvit_config.get("temporal_metadata_channels", 0)),
+        )
+
+    if model_type.upper() == "RS3MAMBA":
+        rs3mamba_config = model_config or {}
+
+        model = RS3Mamba(
+            decode_channels=rs3mamba_config.get("decode_channels", 64),
+            dropout=rs3mamba_config.get("dropout", 0.1),
+            backbone_name=encoder_name or rs3mamba_config.get("backbone_name", "swsl_resnet18"),
+            pretrained=encoder_weights is not None,
+            window_size=rs3mamba_config.get("window_size", 8),
+            num_classes=n_classes,
+            in_channels=in_channels,
+        )
+
+        pretrain_path = rs3mamba_config.get("vssm_pretrain_path")
+        if pretrain_path:
+            model = load_pretrained_ckpt(model, pretrain_path)
+
+        return model
+
+    if model_type.upper() == "UNETFORMER":
+        unetformer_config = model_config or {}
+
+        return UNetFormer(
+            decode_channels=unetformer_config.get("decode_channels", 64),
+            dropout=unetformer_config.get("dropout", 0.1),
+            backbone_name=encoder_name or unetformer_config.get("backbone_name", "swsl_resnet18"),
+            pretrained=encoder_weights is not None,
+            window_size=unetformer_config.get("window_size", 8),
+            num_classes=n_classes,
+            in_channels=in_channels,
         )
 
     try:
