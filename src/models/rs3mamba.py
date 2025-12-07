@@ -273,10 +273,11 @@ class GlobalLocalAttention(nn.Module):
 
         attn = attn[:, :, :H, :W]
 
-        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect"))
-        out = self.attn_y(functional.pad(out, pad=(0, 1, 0, 0), mode="reflect"))
+        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + \
+              self.attn_y(functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"))
 
         out = out + local
+        out = self.pad_out(out)
         out = self.proj(out)
         out = out[:, :, :H, :W]
 
@@ -391,7 +392,7 @@ class FusionAttention(nn.Module):
     def __init__(
         self,
         dim: int = 256,
-        ssm_dims: int = 256,
+        ssmdims: int = 256,
         num_heads: int = 16,
         qkv_bias: bool = False,
         window_size: int = 8,
@@ -404,8 +405,8 @@ class FusionAttention(nn.Module):
         self.ws = window_size
 
         self.qkv = Conv(dim, 3 * dim, kernel_size=1, bias=qkv_bias)
-        self.local1 = ConvBN(ssm_dims, dim, kernel_size=3)
-        self.local2 = ConvBN(ssm_dims, dim, kernel_size=1)
+        self.local1 = ConvBN(ssmdims, dim, kernel_size=3)
+        self.local2 = ConvBN(ssmdims, dim, kernel_size=1)
         self.proj = SeparableConvBN(dim, dim, kernel_size=window_size)
 
         self.attn_x = nn.AvgPool2d(
@@ -448,9 +449,17 @@ class FusionAttention(nn.Module):
             x = functional.pad(x, (0, 0, 0, ps - H % ps), mode="reflect")
         return x
 
+    def pad_out(self, x: torch.Tensor) -> torch.Tensor:
+        x = functional.pad(x, pad=(0, 1, 0, 1), mode="reflect")
+        return x
+
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Fuse CNN features (x) with Mamba features (y)."""
         B, C, H, W = x.shape
+
+        # Resize Mamba features to match CNN features spatial dimensions
+        if y.shape[2:] != x.shape[2:]:
+            y = functional.interpolate(y, size=(H, W), mode="bilinear", align_corners=False)
 
         # Local features from Mamba branch
         local = self.local2(y) + self.local1(y)
@@ -498,10 +507,11 @@ class FusionAttention(nn.Module):
 
         attn = attn[:, :, :H, :W]
 
-        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect"))
-        out = self.attn_y(functional.pad(out, pad=(0, 1, 0, 0), mode="reflect"))
+        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + \
+              self.attn_y(functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"))
 
         out = out + local
+        out = self.pad_out(out)
         out = self.proj(out)
         out = out[:, :, :H, :W]
 
@@ -514,7 +524,7 @@ class FusionBlock(nn.Module):
     def __init__(
         self,
         dim: int = 256,
-        ssm_dims: int = 256,
+        ssmdims: int = 256,
         num_heads: int = 16,
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
@@ -527,10 +537,10 @@ class FusionBlock(nn.Module):
     ) -> None:
         super().__init__()
         self.normx = norm_layer(dim)
-        self.normy = norm_layer(ssm_dims)
+        self.normy = norm_layer(ssmdims)
         self.attn = FusionAttention(
             dim,
-            ssm_dims,
+            ssmdims,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
             window_size=window_size,
