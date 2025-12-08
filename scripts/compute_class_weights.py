@@ -5,7 +5,7 @@ This script computes:
 2. Class weights for weighted cross-entropy loss using inverse frequency
 
 Usage:
-    python scripts/compute_class_weights.py --mask_dir data/flair_2_toy_labels_train
+    python -m scripts.compute_class_weights --mask_dir data/flair_2_toy_labels_train --image_dir data/flair_2_toy_aerial_train
 
 The script outputs:
 - Pixel counts per class
