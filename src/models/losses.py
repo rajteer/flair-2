@@ -72,11 +72,32 @@ class WeightedCrossEntropyDiceLoss(nn.Module):
         self._raw_class_weights = class_weights
         self.ignore_index = ignore_index
 
-        dice_params = dice_kwargs or {"mode": "multiclass"}
+        # Default Dice loss parameters with epsilon for numerical stability
+        dice_params = dice_kwargs or {"mode": "multiclass", "smooth": 1e-6}
+        # Ensure smooth (epsilon) is set if not provided
+        if "smooth" not in dice_params:
+            dice_params["smooth"] = 1e-6
         self.dice_loss = smp.losses.DiceLoss(**dice_params)
 
     def forward(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # Prepare weight tensor on the same device as predictions if provided
+        """Compute the weighted combination of cross-entropy and Dice loss.
+
+        Args:
+            predictions: Model predictions of shape (N, C, H, W) where N is batch size,
+                C is number of classes, and H, W are spatial dimensions.
+                **Must be raw logits (not softmax probabilities)** as both
+                F.cross_entropy and smp.losses.DiceLoss apply softmax internally.
+            targets: Ground truth labels of shape (N, H, W) with class indices.
+
+        Returns:
+            Combined loss value as a scalar tensor.
+
+        Notes:
+            - Cross-entropy loss applies class weights and respects ignore_index.
+            - Dice loss includes epsilon (smooth parameter) for numerical stability.
+            - Both losses expect raw logits and handle softmax internally.
+
+        """
         weight = None
         if self._raw_class_weights is not None:
             if isinstance(self._raw_class_weights, torch.Tensor):
@@ -86,12 +107,10 @@ class WeightedCrossEntropyDiceLoss(nn.Module):
                     self._raw_class_weights, dtype=torch.float, device=predictions.device,
                 )
 
-        # Cross-entropy expects raw logits and class indices in targets
         ce_loss = F.cross_entropy(
             predictions, targets.long(), weight=weight, ignore_index=self.ignore_index,
         )
 
-        # Dice loss from SMP is used as-is (matches other losses in repository)
         dice_loss = self.dice_loss(predictions, targets)
 
         return self.ce_weight * ce_loss + self.dice_weight * dice_loss
