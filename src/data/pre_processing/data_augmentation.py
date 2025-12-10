@@ -29,18 +29,32 @@ class FlairAugmentation:
     def _adjust_contrast_tensor(self, image: torch.Tensor, factor: float) -> torch.Tensor:
         orig_dtype = image.dtype
         image_f = image.to(torch.float32)
-        mean = image_f.mean(dim=(1, 2), keepdim=True)  # (C,1,1)
-        out = (image_f - mean) * factor + mean
+
+        img_optical = image_f[:4, ...]
+        img_rest = image_f[4:, ...]
+
+        mean = img_optical.mean(dim=(1, 2), keepdim=True)  # (C,1,1)
+        out_optical = (img_optical - mean) * factor + mean
+
         if self.clamp:
-            out = out.clamp(self.clamp_min, self.clamp_max)
+            out_optical = out_optical.clamp(self.clamp_min, self.clamp_max)
+
+        out = torch.cat([out_optical, img_rest], dim=0)
         return out.to(orig_dtype)
 
     def _adjust_brightness_tensor(self, image: torch.Tensor, factor: float) -> torch.Tensor:
         orig_dtype = image.dtype
         image_f = image.to(torch.float32)
-        out = image_f * factor
+
+        img_optical = image_f[:4, ...]
+        img_rest = image_f[4:, ...]
+
+        out_optical = img_optical * factor
+
         if self.clamp:
-            out = out.clamp(self.clamp_min, self.clamp_max)
+            out_optical = out_optical.clamp(self.clamp_min, self.clamp_max)
+
+        out = torch.cat([out_optical, img_rest], dim=0)
         return out.to(orig_dtype)
 
     def apply_flair_augmentations(
@@ -94,7 +108,6 @@ class FlairAugmentation:
         images: torch.Tensor,
         masks: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        # batch or single sample support
         if images.dim() == 4:  # batch (B,C,H,W)
             batch_size = images.size(0)
             out_images = []
