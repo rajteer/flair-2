@@ -10,7 +10,7 @@ import torch
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torchinfo import summary
 
-from src.data.pre_processing.data_augmentation import FlairAugmentation
+from src.data.pre_processing.data_augmentation import CutMix, FlairAugmentation
 from src.utils.mlflow_utils import log_metrics_to_mlflow, log_model_to_mlflow
 from src.utils.model_stats import compute_model_complexity
 
@@ -135,6 +135,7 @@ def _train_epoch_standard(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     augmenter: FlairAugmentation | None = None,
+    cutmix: CutMix | None = None,
 ) -> float:
     """Train a standard (non-temporal) model for a single epoch and return average loss."""
     model.train()
@@ -146,6 +147,9 @@ def _train_epoch_standard(
 
         if augmenter is not None:
             x, y = augmenter(x, y)
+
+        if cutmix is not None:
+            x, y = cutmix(x, y)
 
         optimizer.zero_grad()
         outputs = model(x)
@@ -284,6 +288,10 @@ def train(
         if apply_augmentations
         else None
     )
+    cutmix = None
+    if apply_augmentations and augmentation_config and "cutmix" in augmentation_config:
+        cm_cfg = augmentation_config["cutmix"]
+        cutmix = CutMix(prob=cm_cfg.get("prob", 0.5), beta=cm_cfg.get("beta", 1.0))
     best_model_state = None
 
     is_temporal_model = sample_inputs.ndim == TEMPORAL_MODEL_NDIM
@@ -314,6 +322,7 @@ def train(
                 optimizer,
                 device,
                 augmenter,
+                cutmix=cutmix,
             )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)

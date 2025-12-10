@@ -1,4 +1,5 @@
 import random
+import numpy as np
 
 import torch
 
@@ -118,3 +119,58 @@ class FlairAugmentation:
                 out_masks.append(msk)
             return torch.stack(out_images), torch.stack(out_masks)
         return self.apply_flair_augmentations(images, masks)
+
+
+class CutMix:
+    """CutMix augmentation: https://arxiv.org/abs/1905.04899."""
+
+    def __init__(self, prob: float = 0.5, beta: float = 1.0) -> None:
+        """Initialize CutMix.
+
+        Args:
+            prob: Probability of applying CutMix.
+            beta: Hyperparameter for Beta distribution.
+        """
+        self.prob = prob
+        self.beta = beta
+
+    def _rand_bbox(self, size: tuple[int, int], lam: float) -> tuple[int, int, int, int]:
+        """Generate random bounding box."""
+        W = size[0]
+        H = size[1]
+        cut_rat = np.sqrt(1.0 - lam)
+        cut_w = torch.tensor(int(W * cut_rat))
+        cut_h = torch.tensor(int(H * cut_rat))
+
+        cx = torch.randint(W, (1,))
+        cy = torch.randint(H, (1,))
+
+        bbx1 = torch.clamp(cx - cut_w // 2, 0, W)
+        bby1 = torch.clamp(cy - cut_h // 2, 0, H)
+        bbx2 = torch.clamp(cx + cut_w // 2, 0, W)
+        bby2 = torch.clamp(cy + cut_h // 2, 0, H)
+
+        return int(bbx1), int(bby1), int(bbx2), int(bby2)
+
+    def __call__(
+        self,
+        images: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply CutMix to a batch of images and masks."""
+        if random.random() < self.prob:
+            lam = np.random.beta(self.beta, self.beta)
+            batch_size, _, H, W = images.shape
+
+            rand_index = torch.randperm(batch_size)
+
+            bbx1, bby1, bbx2, bby2 = self._rand_bbox((W, H), lam)
+
+            images[:, :, bbx1:bbx2, bby1:bby2] = images[rand_index, :, bbx1:bbx2, bby1:bby2]
+
+            if masks.ndim == 3:  # (B, H, W)
+                masks[:, bbx1:bbx2, bby1:bby2] = masks[rand_index, bbx1:bbx2, bby1:bby2]
+            else:  # (B, C, H, W)
+                masks[:, :, bbx1:bbx2, bby1:bby2] = masks[rand_index, :, bbx1:bbx2, bby1:bby2]
+
+        return images, masks
