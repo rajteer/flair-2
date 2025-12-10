@@ -53,7 +53,7 @@ class WeightedCrossEntropyDiceLoss(nn.Module):
     - `class_weights` may be a list, tuple or `torch.Tensor`. It will be
       converted to a tensor on the same device as the predictions at
       runtime to avoid device-mismatch issues.
-    - `ignore_index` will be passed to the cross-entropy computation.
+    - `ce_kwargs` and `dice_kwargs` allow full customization of both loss components.
 
     """
 
@@ -62,19 +62,28 @@ class WeightedCrossEntropyDiceLoss(nn.Module):
         ce_weight: float = 1.0,
         dice_weight: float = 1.0,
         class_weights: list | tuple | torch.Tensor | None = None,
-        ignore_index: int | None = None,
+        ce_kwargs: dict | None = None,
         dice_kwargs: dict | None = None,
     ) -> None:
         super().__init__()
 
         self.ce_weight = float(ce_weight)
         self.dice_weight = float(dice_weight)
-        self._raw_class_weights = class_weights
-        self.ignore_index = ignore_index
 
-        # Default Dice loss parameters with epsilon for numerical stability
-        dice_params = dice_kwargs or {"mode": "multiclass", "smooth": 1e-6}
-        # Ensure smooth (epsilon) is set if not provided
+        if class_weights is not None:
+            if not isinstance(class_weights, torch.Tensor):
+                class_weights = torch.tensor(class_weights, dtype=torch.float)
+            else:
+                class_weights = class_weights.float()
+            self.register_buffer("class_weights", class_weights)
+        else:
+            self.register_buffer("class_weights", None)
+
+        self.ce_kwargs = ce_kwargs or {}
+
+        dice_params = dice_kwargs or {}
+        if "mode" not in dice_params:
+            dice_params["mode"] = "multiclass"
         if "smooth" not in dice_params:
             dice_params["smooth"] = 1e-6
         self.dice_loss = smp.losses.DiceLoss(**dice_params)
@@ -98,22 +107,11 @@ class WeightedCrossEntropyDiceLoss(nn.Module):
             - Both losses expect raw logits and handle softmax internally.
 
         """
-        weight = None
-        if self._raw_class_weights is not None:
-            if isinstance(self._raw_class_weights, torch.Tensor):
-                weight = self._raw_class_weights.to(predictions.device).float()
-            else:
-                weight = torch.tensor(
-                    self._raw_class_weights,
-                    dtype=torch.float,
-                    device=predictions.device,
-                )
-
         ce_loss = F.cross_entropy(
             predictions,
             targets.long(),
-            weight=weight,
-            ignore_index=self.ignore_index,
+            weight=self.class_weights,
+            **self.ce_kwargs,
         )
 
         dice_loss = self.dice_loss(predictions, targets)
