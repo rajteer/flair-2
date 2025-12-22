@@ -1,31 +1,109 @@
+from __future__ import annotations
+
 import random
-import numpy as np
+from typing import Any
 
 import torch
 
 
 class FlairAugmentation:
-    def __init__(
-        self,
-        augmentation_config: dict,
-        *,
-        clamp: bool = True,
-        clamp_min: float = 0.0,
-        clamp_max: float = 1.0,
-    ) -> None:
+    """Apply data augmentations to aerial imagery with optional elevation channel."""
+
+    def __init__(self, data_config: dict[str, Any]) -> None:
         """Create a `FlairAugmentation` instance.
 
         Args:
-            augmentation_config: Configuration dict for augmentations.
-            clamp: If True, clamp adjusted images to [clamp_min, clamp_max].
-            clamp_min: Minimum clamp value.
-            clamp_max: Maximum clamp value.
+            data_config: Full data configuration dict containing:
+                - data_augmentation.clamp: Whether to clamp values
+                - data_augmentation.augmentations: Dict of augmentation configs
+                - normalization: Mean/std for calculating clamp bounds
+                - selected_channels: List of channel indices
 
         """
-        self.augmentation_config = augmentation_config
-        self.clamp = clamp
-        self.clamp_min = clamp_min
-        self.clamp_max = clamp_max
+        aug_config = data_config.get("data_augmentation", {})
+        self.augmentation_config = aug_config.get("augmentations", {})
+        self.clamp = aug_config.get("clamp", False)
+
+        self.channel_clamp_min = None
+        self.channel_clamp_max = None
+        self.elevation_normalization_params = None
+
+        self._init_normalization_params(data_config)
+        self._init_aug_funcs()
+
+    def _init_aug_funcs(self) -> None:
+        """Initialize augmentation function lookup table with metadata."""
+        self._aug_funcs = {
+            "hflip": lambda img: torch.flip(img, dims=[-1]),
+            "vflip": lambda img: torch.flip(img, dims=[-2]),
+            "rotation": lambda img, k: torch.rot90(img, k=k, dims=(-2, -1)),
+            "contrast": lambda img, val: self._adjust_contrast_tensor(img, val),
+            "brightness": lambda img, val: self._adjust_brightness_tensor(img, val),
+            "elevation_shift": lambda img, val: self._adjust_elevation_shift(img, val),
+            "elevation_scale": lambda img, val: self._adjust_elevation_scale(img, val),
+            "elevation_dropout": lambda img, val: self._adjust_elevation_dropout(img, val),
+        }
+
+        self._aug_meta = {
+            "hflip": (True, None, None),
+            "vflip": (True, None, None),
+            "rotation": (True, "angles", [0, 90, 180, 270]),
+            "contrast": (False, "range", (0.8, 1.2)),
+            "brightness": (False, "range", (0.8, 1.2)),
+            "elevation_shift": (False, "range", (-10.0, 10.0)),
+            "elevation_scale": (False, "range", (0.9, 1.1)),
+            "elevation_dropout": (False, "p", 0.1),
+        }
+
+    def _sample_params(self, aug_name: str, aug_cfg: dict) -> dict:
+        """Sample random parameters for an augmentation based on its config."""
+        _, param_type, default = self._aug_meta.get(aug_name, (True, None, None))
+
+        if param_type is None:
+            return {}
+        if param_type == "range":
+            min_val, max_val = aug_cfg.get("range", default)
+            return {"val": float(random.uniform(min_val, max_val))}
+        if param_type == "angles":
+            angle = random.choice(aug_cfg.get("angles", default))
+            k = (angle // 90) % 4
+            return {"k": k} if k != 0 else {}
+        if param_type == "p":
+            return {"val": aug_cfg.get("p", default)}
+        return {}
+
+    def _init_normalization_params(self, data_config: dict[str, Any]) -> None:
+        """Initialize clamp bounds and elevation params from normalization config."""
+        norm_cfg = data_config.get("normalization")
+        if norm_cfg is None:
+            return
+
+        selected_channels = data_config.get("selected_channels")
+        means = norm_cfg.get("mean")
+        stds = norm_cfg.get("std")
+
+        if selected_channels and means and stds:
+            n_channels = len(selected_channels)
+            t_mean = torch.tensor(means[:n_channels]).view(-1, 1, 1)
+            t_std = torch.tensor(stds[:n_channels]).view(-1, 1, 1)
+            self.channel_clamp_min = (0.0 - t_mean) / t_std
+            self.channel_clamp_max = (1.0 - t_mean) / t_std
+
+        elev_range = norm_cfg.get("elevation_range")
+        elev_idx = norm_cfg.get("elevation_channel_index")
+
+        if (
+            elev_range is not None
+            and elev_idx is not None
+            and selected_channels is not None
+            and elev_idx in selected_channels
+        ):
+            pos = selected_channels.index(elev_idx)
+            self.elevation_normalization_params = {
+                "mean": norm_cfg["mean"][pos],
+                "std": norm_cfg["std"][pos],
+                "raw_range": tuple(elev_range),
+            }
 
     def _adjust_contrast_tensor(self, image: torch.Tensor, factor: float) -> torch.Tensor:
         orig_dtype = image.dtype
@@ -36,9 +114,6 @@ class FlairAugmentation:
 
         mean = img_optical.mean(dim=(1, 2), keepdim=True)  # (C,1,1)
         out_optical = (img_optical - mean) * factor + mean
-
-        if self.clamp:
-            out_optical = out_optical.clamp(self.clamp_min, self.clamp_max)
 
         out = torch.cat([out_optical, img_rest], dim=0)
         return out.to(orig_dtype)
@@ -52,11 +127,71 @@ class FlairAugmentation:
 
         out_optical = img_optical * factor
 
-        if self.clamp:
-            out_optical = out_optical.clamp(self.clamp_min, self.clamp_max)
-
         out = torch.cat([out_optical, img_rest], dim=0)
         return out.to(orig_dtype)
+
+    def _adjust_elevation_shift(self, image: torch.Tensor, delta: float) -> torch.Tensor:
+        """Vertical Shift: Simulates variations in the base terrain level (Z_new = Z + delta)."""
+        if image.shape[0] < 5:  # noqa: PLR2004
+            return image
+
+        elev = image[4].to(torch.float32)
+
+        if self.elevation_normalization_params:
+            params = self.elevation_normalization_params
+            raw_min, raw_max = params["raw_range"]
+            raw_range = raw_max - raw_min
+            std = params["std"]
+            elev = elev + (delta / (std * raw_range + 1e-8))
+        else:
+            elev = elev + delta
+
+        out = image.clone()
+        out[4] = elev.to(image.dtype)
+        return out
+
+    def _adjust_elevation_scale(self, image: torch.Tensor, alpha: float) -> torch.Tensor:
+        """Vertical Scaling: Simulates sensor calibration differences (Z_new = Z * alpha)."""
+        if image.shape[0] < 5:  # noqa: PLR2004
+            return image
+
+        elev = image[4].to(torch.float32)
+
+        if self.elevation_normalization_params:
+            params = self.elevation_normalization_params
+            raw_min, raw_max = params["raw_range"]
+            raw_range = raw_max - raw_min
+            mu = params["mean"]
+            std = params["std"]
+            shift_term = ((alpha - 1.0) / (std + 1e-8)) * (mu + (raw_min / (raw_range + 1e-8)))
+            elev = alpha * elev + shift_term
+        else:
+            elev = elev * alpha
+
+        out = image.clone()
+        out[4] = elev.to(image.dtype)
+        return out
+
+    def _adjust_elevation_dropout(self, image: torch.Tensor, p: float) -> torch.Tensor:
+        """Sensor Dropout: Simulates data acquisition failures (Z_new = 0 for some pixels)."""
+        if image.shape[0] < 5:  # noqa: PLR2004
+            return image
+
+        elev = image[4].to(torch.float32)
+        mask = (torch.rand(elev.shape, device=image.device) > p).float()
+
+        if self.elevation_normalization_params:
+            params = self.elevation_normalization_params
+            mu = params["mean"]
+            std = params["std"]
+            dropout_val = -mu / (std + 1e-8)
+            elev = elev * mask + dropout_val * (1.0 - mask)
+        else:
+            elev = elev * mask
+
+        out = image.clone()
+        out[4] = elev.to(image.dtype)
+        return out
 
     def apply_flair_augmentations(
         self,
@@ -76,31 +211,33 @@ class FlairAugmentation:
         image = image.contiguous()
         mask = mask.contiguous()
 
-        aug_configs = {
-            "hflip": lambda img: torch.flip(img, dims=[-1]),  # flip width (W)
-            "vflip": lambda img: torch.flip(img, dims=[-2]),  # flip height (H)
-            "rotation": lambda img, k: torch.rot90(img, k=k, dims=(-2, -1)),
-            "contrast": lambda img, factor: self._adjust_contrast_tensor(img, factor),
-            "brightness": lambda img, factor: self._adjust_brightness_tensor(img, factor),
-        }
+        for aug_name, func in self._aug_funcs.items():
+            aug_cfg = self.augmentation_config.get(aug_name, {})
+            prob = aug_cfg.get("prob", 0)
+            if random.random() >= prob:
+                continue
 
-        for aug_name, func in aug_configs.items():
-            aug = self.augmentation_config.get(aug_name, {})
-            prob = aug.get("prob", 0)
-            if random.random() < prob:
-                if aug_name == "rotation":
-                    angle = random.choice(aug.get("angles", [0, 90, 180, 270]))
-                    k = (angle // 90) % 4
-                    if k != 0:
-                        image = func(image, k=k)
-                        mask = func(mask, k=k)
-                elif aug_name in ["contrast", "brightness"]:
-                    min_val, max_val = aug.get("range", (0.8, 1.2))
-                    factor = float(random.uniform(min_val, max_val))
-                    image = func(image, factor)
-                else:
-                    image = func(image)
+            params = self._sample_params(aug_name, aug_cfg)
+            if not params and self._aug_meta[aug_name][1] == "angles":
+                # rotation with k=0 means no rotation
+                continue
+
+            applies_to_mask = self._aug_meta[aug_name][0]
+            if params:
+                image = func(image, **params)
+                if applies_to_mask:
+                    mask = func(mask, **params)
+            else:
+                image = func(image)
+                if applies_to_mask:
                     mask = func(mask)
+
+        if self.clamp and self.channel_clamp_min is not None and self.channel_clamp_max is not None:
+            cmin = self.channel_clamp_min.to(image.device)
+            cmax = self.channel_clamp_max.to(image.device)
+            n_channels = min(image.shape[0], cmin.shape[0])
+            image[:n_channels] = torch.max(image[:n_channels], cmin[:n_channels])
+            image[:n_channels] = torch.min(image[:n_channels], cmax[:n_channels])
 
         return image, mask
 
@@ -119,58 +256,3 @@ class FlairAugmentation:
                 out_masks.append(msk)
             return torch.stack(out_images), torch.stack(out_masks)
         return self.apply_flair_augmentations(images, masks)
-
-
-class CutMix:
-    """CutMix augmentation: https://arxiv.org/abs/1905.04899."""
-
-    def __init__(self, prob: float = 0.5, beta: float = 1.0) -> None:
-        """Initialize CutMix.
-
-        Args:
-            prob: Probability of applying CutMix.
-            beta: Hyperparameter for Beta distribution.
-        """
-        self.prob = prob
-        self.beta = beta
-
-    def _rand_bbox(self, size: tuple[int, int], lam: float) -> tuple[int, int, int, int]:
-        """Generate random bounding box."""
-        W = size[0]
-        H = size[1]
-        cut_rat = np.sqrt(1.0 - lam)
-        cut_w = torch.tensor(int(W * cut_rat))
-        cut_h = torch.tensor(int(H * cut_rat))
-
-        cx = torch.randint(W, (1,))
-        cy = torch.randint(H, (1,))
-
-        bbx1 = torch.clamp(cx - cut_w // 2, 0, W)
-        bby1 = torch.clamp(cy - cut_h // 2, 0, H)
-        bbx2 = torch.clamp(cx + cut_w // 2, 0, W)
-        bby2 = torch.clamp(cy + cut_h // 2, 0, H)
-
-        return int(bbx1), int(bby1), int(bbx2), int(bby2)
-
-    def __call__(
-        self,
-        images: torch.Tensor,
-        masks: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply CutMix to a batch of images and masks."""
-        if random.random() < self.prob:
-            lam = np.random.beta(self.beta, self.beta)
-            batch_size, _, H, W = images.shape
-
-            rand_index = torch.randperm(batch_size)
-
-            bbx1, bby1, bbx2, bby2 = self._rand_bbox((W, H), lam)
-
-            images[:, :, bbx1:bbx2, bby1:bby2] = images[rand_index, :, bbx1:bbx2, bby1:bby2]
-
-            if masks.ndim == 3:  # (B, H, W)
-                masks[:, bbx1:bbx2, bby1:bby2] = masks[rand_index, bbx1:bbx2, bby1:bby2]
-            else:  # (B, C, H, W)
-                masks[:, :, bbx1:bbx2, bby1:bby2] = masks[rand_index, :, bbx1:bbx2, bby1:bby2]
-
-        return images, masks

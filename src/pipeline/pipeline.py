@@ -279,7 +279,7 @@ class TrainEvalPipeline:
                 scheduler=lr_scheduler,
                 device=device,
                 apply_augmentations=config["data"]["data_augmentation"]["apply_augmentations"],
-                augmentation_config=config["data"]["data_augmentation"]["augmentations"],
+                data_config=config["data"],
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
                 num_classes=config["data"]["num_classes"],
