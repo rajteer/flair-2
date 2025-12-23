@@ -16,6 +16,7 @@ data:
   num_classes: 13
   batch_size: 4
   num_workers: 0
+  pin_memory: true
   selected_channels:
     - 0
     - 1

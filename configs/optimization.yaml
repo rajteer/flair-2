@@ -1,0 +1,60 @@
+optimization:
+  study_name: "flair-2-hyperparam-search"
+  n_trials: 10
+  n_epochs: 2  # Override epochs for optimization trials
+  direction: "minimize"
+  
+  search_space:
+    - name: "training.optimizer.learning_rate"
+      type: "float"
+      low: 1.0e-5
+      high: 1.0e-2
+      log: true
+    
+    - name: "training.optimizer.weight_decay"
+      type: "float"
+      low: 1.0e-6
+      high: 1.0e-3
+      log: true
+      
+    - name: "model.encoder_name"
+      type: "categorical"
+      choices: 
+        - "mit_b0"
+        - "mit_b1"
+        - "resnet18"
+
+    - name: "model.stochastic_depth"
+      type: "float"
+      low: 0.0
+      high: 0.5
+
+    - name: "data.data_augmentation.augmentations.hflip.prob"
+      type: "float"
+      low: 0.0
+      high: 1.0
+
+    - name: "data.data_augmentation.augmentations.vflip.prob"
+      type: "float"
+      low: 0.0
+      high: 1.0
+
+    - name: "data.data_augmentation.augmentations.rotation.prob"
+      type: "float"
+      low: 0.0
+      high: 1.0
+
+    - name: "data.data_augmentation.augmentations.contrast.prob"
+      type: "float"
+      low: 0.0
+      high: 1.0
+
+    - name: "data.data_augmentation.augmentations.brightness.prob"
+      type: "float"
+      low: 0.0
+      high: 1.0
+
+    - name: "data.data_augmentation.augmentations.chessmix.prob"
+      type: "float"
+      low: 0.0
+      high: 1.0

@@ -230,6 +230,7 @@ def train(
     data_config: dict[str, Any] | None = None,
     log_evaluation_metrics: bool = True,
     log_model: bool = True,
+    pruning_callback: Any | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -337,6 +338,9 @@ def train(
                 metrics={"train_loss": loss_epoch, "val_loss": val_loss},
                 step=epoch,
             )
+
+        if pruning_callback is not None:
+            pruning_callback(val_loss, epoch)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

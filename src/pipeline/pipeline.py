@@ -40,9 +40,17 @@ class TrainEvalPipeline:
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", run_name).strip("_") if run_name else ""
         run_suffix = f"_{safe_name}" if safe_name else ""
         logs_path: Path = Path(logs_dir).expanduser().resolve() if logs_dir else Path.cwd()
+        if logs_dir:
+            logs_path.mkdir(parents=True, exist_ok=True)
         self.log_file = logs_path / f"pipeline_{timestamp}{run_suffix}.log"
 
-    def run(self, config: dict[str, Any], *, no_stdout_logs: bool = False) -> None:
+    def run(
+        self,
+        config: dict[str, Any],
+        *,
+        no_stdout_logs: bool = False,
+        pruning_callback: Any | None = None,
+    ) -> dict[str, Any]:
         """Execute the training and evaluation pipeline.
 
         Args:
@@ -71,7 +79,10 @@ class TrainEvalPipeline:
 
         logger.info("Starting train-evaluation pipeline.")
 
-        with mlflow.start_run(run_name=config["mlflow"]["run_name"]):
+        with mlflow.start_run(
+            run_name=config["mlflow"]["run_name"],
+            nested=mlflow.active_run() is not None,
+        ):
             mlflow.log_dict(config, artifact_file="config_resolved.json")
 
             mlflow.log_params(
@@ -196,6 +207,7 @@ class TrainEvalPipeline:
 
             generator = create_generator(seed)
             num_workers = config["data"]["num_workers"]
+            pin_memory = config["data"].get("pin_memory", True)
 
             train_loader = DataLoader(
                 train_dataset,
@@ -205,6 +217,7 @@ class TrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 generator=generator,
                 persistent_workers=bool(num_workers > 0),
+                pin_memory=pin_memory,
                 collate_fn=pad_collate_flair if use_sentinel else collate_standard,
             )
 
@@ -215,6 +228,7 @@ class TrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
+                pin_memory=pin_memory,
                 collate_fn=pad_collate_flair if use_sentinel else collate_standard,
             )
 
@@ -225,6 +239,7 @@ class TrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
+                pin_memory=pin_memory,
                 collate_fn=pad_collate_flair if use_sentinel else collate_standard,
             )
 
@@ -251,6 +266,7 @@ class TrainEvalPipeline:
                 in_channels=len(config["data"]["selected_channels"]),
                 n_classes=config["data"]["num_classes"],
                 dynamic_img_size=config["model"].get("dynamic_img_size", False),
+                stochastic_depth=config["model"].get("stochastic_depth"),
             )
 
             model.to(device)
@@ -270,7 +286,7 @@ class TrainEvalPipeline:
 
             logger.info("Starting training model %s", config["model"]["model_type"])
 
-            train(
+            metrics = train(
                 model=model,
                 train_loader=train_loader,
                 val_loader=val_loader,
@@ -283,6 +299,7 @@ class TrainEvalPipeline:
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
                 num_classes=config["data"]["num_classes"],
+                pruning_callback=pruning_callback,
             )
 
             logger.info("Training finished. Evaluating the model...")
@@ -342,6 +359,8 @@ class TrainEvalPipeline:
             )
 
             mlflow.log_artifact(str(self.log_file), artifact_path="logs")
+
+            return metrics
 
 
 def add_train_eval_arguments(
