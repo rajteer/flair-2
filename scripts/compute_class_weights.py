@@ -77,36 +77,37 @@ def main(mask_dir: str, image_dir: str, num_classes: int) -> None:
 
     total_pixels = class_counts.sum().item()
 
-    print("\n" + "=" * 80)
-    print("CLASS PIXEL COUNTS")
-    print("=" * 80)
-    print(f"{'Class':<10} {'Count':<15} {'Percentage':<12} {'Frequency':<10}")
-    print("-" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("CLASS PIXEL COUNTS")
+    logger.info("=" * 80)
+    logger.info(f"{'Class':<10} {'Count':<15} {'Percentage':<12} {'Frequency':<10}")
+    logger.info("-" * 80)
 
     for class_idx in range(num_classes):
         count = class_counts[class_idx].item()
         percentage = 100.0 * count / total_pixels
         frequency = count / total_pixels
-        print(f"{class_idx:<10} {count:<15,} {percentage:<12.4f}% {frequency:<10.6f}")
+        logger.info(f"{class_idx:<10} {count:<15,} {percentage:<12.4f}% {frequency:<10.6f}")
 
-    print("-" * 80)
-    print(f"{'Total':<10} {total_pixels:<15,} {100.0:<12.1f}%")
-    print("=" * 80)
+    logger.info("-" * 80)
+    logger.info(f"{'Total':<10} {total_pixels:<15,} {100.0:<12.1f}%")
+    logger.info("=" * 80)
     inv_freq_weights = compute_inverse_frequency_weights(class_counts)
 
-    print("\n" + "=" * 80)
-    print("CLASS WEIGHTS (Inverse Frequency)")
-    print("=" * 80)
-    print(f"{'Class':<10} {'Weight':<15}")
-    print("-" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("CLASS WEIGHTS (Inverse Frequency)")
+    logger.info("=" * 80)
+    logger.info(f"{'Class':<10} {'Weight':<15}")
+    logger.info("-" * 80)
 
     for class_idx in range(num_classes):
         weight = inv_freq_weights[class_idx].item()
-        print(f"{class_idx:<10} {weight:<15.4f}")
+        logger.info(f"{class_idx:<10} {weight:<15.4f}")
 
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info(f"\nclass_counts: {class_counts.tolist()}")
+    logger.info(f"\nclass_weights (Inverse Frequency): {inv_freq_weights.tolist()}\n")
 
-    print(f"\nclass_weights: {inv_freq_weights.tolist()}\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
