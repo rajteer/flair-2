@@ -19,40 +19,6 @@ MAX_ORIGINAL_CLASS = 12
 OTHER_CLASS = 13
 
 
-def get_unique_id(filename: str) -> str:
-    """Extract unique ID from filename.
-
-    Args:
-        filename: Name of the file (e.g., "IMG_00001.tif" or "MSK_00001.tif")
-
-    Returns:
-        Extracted numeric ID from the filename
-
-    Raises:
-        ValueError: If no numeric ID can be extracted
-
-    """
-    match = re.search(r"(\d+)", filename)
-    if match is None:
-        msg = f"Could not extract numeric ID from filename: {filename}"
-        raise ValueError(msg)
-    return match.group(1)
-
-
-def get_path_mapping(directory: Path, pattern: str) -> dict[str, Path]:
-    """Create a mapping from unique IDs to file paths.
-
-    Args:
-        directory: The directory to search
-        pattern: The glob pattern to match files (e.g., "IMG_*.tif")
-
-    Returns:
-        A dictionary mapping unique IDs to file paths
-
-    """
-    return {get_unique_id(path.name): path for path in sorted(directory.rglob(pattern))}
-
-
 def load_centroids_mapping(centroids_path: str | Path) -> dict[str, tuple[int, int]]:
     """Load centroid coordinates mapping from JSON file.
 
