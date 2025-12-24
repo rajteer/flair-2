@@ -75,17 +75,41 @@ def calculate_iou_scores(
 def get_evaluation_metrics_dict(
     num_classes: int,
     device: torch.device,
+    other_class_index: int | None = None,
 ) -> dict[str, Metric]:
     """Initialize TorchMetrics for multiclass classification."""
     return {
-        "conf_matrix": MulticlassConfusionMatrix(num_classes=num_classes).to(device),
-        "macro_f1": MulticlassF1Score(num_classes=num_classes, average="macro").to(device),
-        "f1_per_class": MulticlassF1Score(num_classes=num_classes, average=None).to(device),
-        "overall_f1": MulticlassF1Score(num_classes=num_classes, average="micro").to(device),
-        "macro_accuracy": MulticlassAccuracy(num_classes=num_classes, average="macro").to(
+        "conf_matrix": MulticlassConfusionMatrix(
+            num_classes=num_classes,
+            ignore_index=other_class_index,
+        ).to(device),
+        "macro_f1": MulticlassF1Score(
+            num_classes=num_classes,
+            average="macro",
+            ignore_index=other_class_index,
+        ).to(device),
+        "f1_per_class": MulticlassF1Score(
+            num_classes=num_classes,
+            average=None,
+            ignore_index=other_class_index,
+        ).to(device),
+        "overall_f1": MulticlassF1Score(
+            num_classes=num_classes,
+            average="micro",
+            ignore_index=other_class_index,
+        ).to(device),
+        "macro_accuracy": MulticlassAccuracy(
+            num_classes=num_classes,
+            average="macro",
+            ignore_index=other_class_index,
+        ).to(
             device,
         ),
-        "overall_accuracy": MulticlassAccuracy(num_classes=num_classes, average="micro").to(
+        "overall_accuracy": MulticlassAccuracy(
+            num_classes=num_classes,
+            average="micro",
+            ignore_index=other_class_index,
+        ).to(
             device,
         ),
     }
@@ -436,7 +460,11 @@ def evaluate(
 
     model.eval()
     model.to(device)
-    evaluation_metrics_dict = get_evaluation_metrics_dict(num_classes, device)
+    evaluation_metrics_dict = get_evaluation_metrics_dict(
+        num_classes,
+        device,
+        other_class_index=other_class_index,
+    )
     logger.info("Starting evaluation on %d batches", len(data_loader))
 
     sample_ids_to_log = set(sample_ids_to_plot) if sample_ids_to_plot else set()
