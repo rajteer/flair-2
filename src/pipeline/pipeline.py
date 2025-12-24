@@ -102,6 +102,8 @@ class TrainEvalPipeline:
                     "lr_scheduler": config["training"]["optimizer"]
                     .get("lr_scheduler", {})
                     .get("type", "None"),
+                    "accumulation_steps": config["training"].get("accumulation_steps", 1),
+                    "use_amp": config["training"].get("use_amp", False),
                 },
             )
 
@@ -283,6 +285,8 @@ class TrainEvalPipeline:
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
                 num_classes=config["data"]["num_classes"],
+                accumulation_steps=config["training"].get("accumulation_steps", 1),
+                use_amp=config["training"].get("use_amp", False),
             )
 
             logger.info("Training finished. Evaluating the model...")
