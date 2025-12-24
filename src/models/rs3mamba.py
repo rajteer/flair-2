@@ -273,8 +273,9 @@ class GlobalLocalAttention(nn.Module):
 
         attn = attn[:, :, :H, :W]
 
-        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + \
-              self.attn_y(functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"))
+        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + self.attn_y(
+            functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect")
+        )
 
         out = out + local
         out = self.pad_out(out)
@@ -507,8 +508,9 @@ class FusionAttention(nn.Module):
 
         attn = attn[:, :, :H, :W]
 
-        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + \
-              self.attn_y(functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"))
+        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + self.attn_y(
+            functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect")
+        )
 
         out = out + local
         out = self.pad_out(out)

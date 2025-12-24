@@ -7,7 +7,12 @@ from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
-from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
+
+try:
+    from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
+except ImportError:
+    RS3Mamba = None
+    load_pretrained_ckpt = None
 from src.models.tsvit import TSViT
 from src.models.unetformer import UNetFormer
 

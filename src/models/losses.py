@@ -83,12 +83,17 @@ class WeightedCrossEntropyDiceLoss(nn.Module):
                 weight = self._raw_class_weights.to(predictions.device).float()
             else:
                 weight = torch.tensor(
-                    self._raw_class_weights, dtype=torch.float, device=predictions.device,
+                    self._raw_class_weights,
+                    dtype=torch.float,
+                    device=predictions.device,
                 )
 
         # Cross-entropy expects raw logits and class indices in targets
         ce_loss = F.cross_entropy(
-            predictions, targets.long(), weight=weight, ignore_index=self.ignore_index,
+            predictions,
+            targets.long(),
+            weight=weight,
+            ignore_index=self.ignore_index,
         )
 
         # Dice loss from SMP is used as-is (matches other losses in repository)
