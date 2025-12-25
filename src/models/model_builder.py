@@ -187,12 +187,14 @@ def build_optimizer(
         msg = f"Unknown optimizer type: {optimizer_type}"
         raise ValueError(msg) from err
 
-    return optimizer_class(
-        model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        betas=betas,
-    )
+    kwargs: dict = {
+        "lr": learning_rate,
+        "weight_decay": weight_decay,
+    }
+    if betas is not None:
+        kwargs["betas"] = betas
+
+    return optimizer_class(model.parameters(), **kwargs)
 
 
 def build_lr_scheduler(
