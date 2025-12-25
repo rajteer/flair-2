@@ -130,8 +130,17 @@ class FlairAugmentation:
         out = torch.cat([out_optical, img_rest], dim=0)
         return out.to(orig_dtype)
 
-    def _adjust_elevation_shift(self, image: torch.Tensor, delta: float) -> torch.Tensor:
-        """Vertical Shift: Simulates variations in the base terrain level (Z_new = Z + delta)."""
+    def _adjust_elevation_shift(self, image: torch.Tensor, pct: float) -> torch.Tensor:
+        """Vertical Shift: Simulates variations in the base terrain level.
+
+        Args:
+            image: Input tensor of shape (C, H, W).
+            pct: Percentage of elevation range to shift by (e.g., 10.0 means +10%).
+
+        Returns:
+            Image with shifted elevation channel.
+
+        """
         if image.shape[0] < 5:  # noqa: PLR2004
             return image
 
@@ -139,12 +148,11 @@ class FlairAugmentation:
 
         if self.elevation_normalization_params:
             params = self.elevation_normalization_params
-            raw_min, raw_max = params["raw_range"]
-            raw_range = raw_max - raw_min
             std = params["std"]
-            elev = elev + (delta / (std * raw_range + 1e-8))
+            elev = elev + (pct / 100.0) / (std + 1e-8)
         else:
-            elev = elev + delta
+            data_range = elev.max() - elev.min() + 1e-8
+            elev = elev + (pct / 100.0) * data_range
 
         out = image.clone()
         out[4] = elev.to(image.dtype)
