@@ -75,21 +75,21 @@ class PatchMerging2D(nn.Module):
         B, H, W, C = x.shape
 
         # Handle odd dimensions (local shape fix like original implementation)
-        SHAPE_FIX = [-1, -1]
+        shape_fix = [-1, -1]
         if (W % 2 != 0) or (H % 2 != 0):
-            SHAPE_FIX[0] = H // 2
-            SHAPE_FIX[1] = W // 2
+            shape_fix[0] = H // 2
+            shape_fix[1] = W // 2
 
         x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
         x1 = x[:, 1::2, 0::2, :]
         x2 = x[:, 0::2, 1::2, :]
         x3 = x[:, 1::2, 1::2, :]
 
-        if SHAPE_FIX[0] > 0:
-            x0 = x0[:, : SHAPE_FIX[0], : SHAPE_FIX[1], :]
-            x1 = x1[:, : SHAPE_FIX[0], : SHAPE_FIX[1], :]
-            x2 = x2[:, : SHAPE_FIX[0], : SHAPE_FIX[1], :]
-            x3 = x3[:, : SHAPE_FIX[0], : SHAPE_FIX[1], :]
+        if shape_fix[0] > 0:
+            x0 = x0[:, : shape_fix[0], : shape_fix[1], :]
+            x1 = x1[:, : shape_fix[0], : shape_fix[1], :]
+            x2 = x2[:, : shape_fix[0], : shape_fix[1], :]
+            x3 = x3[:, : shape_fix[0], : shape_fix[1], :]
 
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, H // 2, W // 2, 4 * C)

@@ -126,14 +126,14 @@ def _train_epoch_temporal(
             with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
                 loss = criterion(outputs, y)
-                loss = loss / accumulation_steps
                 loss_value = loss.item()
+                loss = loss / accumulation_steps
         else:
             with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                 outputs = model(x, batch_positions=batch_positions)
                 loss = criterion(outputs, y)
-                loss = loss / accumulation_steps
                 loss_value = loss.item()
+                loss = loss / accumulation_steps
 
         scaler.scale(loss).backward()
 
@@ -144,7 +144,7 @@ def _train_epoch_temporal(
 
         total_loss += float(loss_value)
 
-    return (total_loss * accumulation_steps) / len(loader)
+    return total_loss / len(loader)
 
 
 def _train_epoch_standard(
@@ -176,8 +176,8 @@ def _train_epoch_standard(
         with torch.amp.autocast(device_type=device_type, enabled=use_amp):
             outputs = model(x)
             loss = criterion(outputs, y)
-            loss = loss / accumulation_steps
             loss_value = loss.item()
+            loss = loss / accumulation_steps
 
         scaler.scale(loss).backward()
 
@@ -188,7 +188,7 @@ def _train_epoch_standard(
 
         total_loss += float(loss_value)
 
-    return (total_loss * accumulation_steps) / len(loader)
+    return total_loss / len(loader)
 
 
 def _validate_epoch_temporal(

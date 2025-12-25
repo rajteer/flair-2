@@ -10,9 +10,10 @@ from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLos
 
 try:
     from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
-except ImportError:
+except ImportError as e:
     RS3Mamba = None
     load_pretrained_ckpt = None
+    RS3MAMBA_IMPORT_ERROR = e
 from src.models.tsvit import TSViT
 from src.models.unetformer import UNetFormer
 
@@ -25,7 +26,7 @@ def build_model(
     encoder_weights: str | None = None,
     activation: str | None = None,
     *,
-    dynamic_img_size: bool = False,
+    _dynamic_img_size: bool = False,
     model_config: dict[str, Any] | None = None,
 ) -> nn.Module:
     """Build a segmentation model.
@@ -115,9 +116,11 @@ def build_model(
 
     if model_type.upper() == "RS3MAMBA":
         if RS3Mamba is None:
-            raise ImportError(
-                "RS3Mamba or load_pretrained_ckpt could not be imported. Please check dependencies (e.g. mamba_ssm, kernels)."
+            msg = (
+                f"RS3Mamba could not be imported. Check dependencies (e.g. mamba_ssm, kernels). "
+                f"Original error: {RS3MAMBA_IMPORT_ERROR}"
             )
+            raise ImportError(msg)
         rs3mamba_config = model_config or {}
 
         model = RS3Mamba(
