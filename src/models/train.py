@@ -98,6 +98,8 @@ def _train_epoch_temporal(
     criterion: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    accumulation_steps: int = 1,
+    use_amp: bool = False,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
@@ -105,26 +107,44 @@ def _train_epoch_temporal(
     Note: Augmentations are not supported for temporal (5D) data.
     """
     model.train()
+    optimizer.zero_grad()
+
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    scaler_enabled = use_amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler(device=device_type, enabled=scaler_enabled)
     total_loss = 0.0
 
     forward_sig = inspect.signature(model.forward)
     supports_pad_mask = "pad_mask" in forward_sig.parameters
 
-    for batch_data in loader:
+    for batch_idx, batch_data in enumerate(loader):
         x = batch_data[BATCH_INDEX_INPUTS].to(device)
         y = batch_data[BATCH_INDEX_TARGETS].to(device)
         pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad()
         if supports_pad_mask:
-            outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+            with torch.amp.autocast(device_type=device_type, enabled=use_amp):
+                outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+                loss = criterion(outputs, y)
+                loss_value = loss.item()
+                loss = loss / accumulation_steps
         else:
-            outputs = model(x, batch_positions=batch_positions)
-        loss = criterion(outputs, y)
-        loss.backward()
-        optimizer.step()
-        total_loss += float(loss.item())
+            with torch.amp.autocast(device_type=device_type, enabled=use_amp):
+                outputs = model(x, batch_positions=batch_positions)
+                loss = criterion(outputs, y)
+                loss_value = loss.item()
+                loss = loss / accumulation_steps
+
+        scaler.scale(loss).backward()
+
+        if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+
+        total_loss += float(loss_value)
 
     return total_loss / len(loader)
 
@@ -137,12 +157,19 @@ def _train_epoch_standard(
     device: torch.device,
     augmenter: FlairAugmentation | None = None,
     chessmix: ChessMix | None = None,
+    accumulation_steps: int = 1,
+    use_amp: bool = False,
 ) -> float:
     """Train a standard (non-temporal) model for a single epoch and return average loss."""
     model.train()
+    optimizer.zero_grad()
+
+    device_type = "cuda" if device.type == "cuda" else "cpu"
+    scaler_enabled = use_amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler(device=device_type, enabled=scaler_enabled)
     total_loss = 0.0
 
-    for batch_data in loader:
+    for batch_idx, batch_data in enumerate(loader):
         x = batch_data[BATCH_INDEX_INPUTS].to(device)
         y = batch_data[BATCH_INDEX_TARGETS].to(device)
 
@@ -152,12 +179,20 @@ def _train_epoch_standard(
         if chessmix is not None:
             x, y = chessmix(x, y)
 
-        optimizer.zero_grad(set_to_none=True)
-        outputs = model(x)
-        loss = criterion(outputs, y)
-        loss.backward()
-        optimizer.step()
-        total_loss += float(loss.item())
+        with torch.amp.autocast(device_type=device_type, enabled=use_amp):
+            outputs = model(x)
+            loss = criterion(outputs, y)
+            loss_value = loss.item()
+            loss = loss / accumulation_steps
+
+        scaler.scale(loss).backward()
+
+        if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+
+        total_loss += float(loss_value)
 
     return total_loss / len(loader)
 
@@ -225,7 +260,9 @@ def train(
     epochs: int = 100,
     patience: int = 20,
     num_classes: int = 13,
+    accumulation_steps: int = 1,
     *,
+    use_amp: bool = False,
     apply_augmentations: bool = True,
     data_config: dict[str, Any] | None = None,
     log_evaluation_metrics: bool = True,
@@ -252,6 +289,9 @@ def train(
         epochs: Maximum number of epochs to train. Defaults to 100.
         patience: Early stopping patience. Defaults to 20.
         num_classes: Number of classes in the segmentation task. Defaults to 13.
+        accumulation_steps: Number of steps to accumulate gradients before updating.
+            Defaults to 1.
+        use_amp: Whether to use Automatic Mixed Precision (AMP). Defaults to False.
         log_evaluation_metrics: Whether to log metrics and models to MLflow.
             Defaults to True.
         log_model: Whether to log the best model to MLflow. Defaults to True.
@@ -315,6 +355,8 @@ def train(
                 criterion,
                 optimizer,
                 device,
+                accumulation_steps,
+                use_amp,
             )
         else:
             loss_epoch = train_epoch_fn(
@@ -324,7 +366,9 @@ def train(
                 optimizer,
                 device,
                 augmenter,
-                chessmix=chessmix,
+                chessmix,
+                accumulation_steps,
+                use_amp,
             )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)

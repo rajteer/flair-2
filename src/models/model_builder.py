@@ -7,7 +7,15 @@ from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
+
+try:
+    from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
+except ImportError as e:
+    RS3Mamba = None
+    load_pretrained_ckpt = None
+    RS3MAMBA_IMPORT_ERROR = e
 from src.models.tsvit import TSViT
+from src.models.unetformer import UNetFormer
 
 
 def build_model(
@@ -18,7 +26,6 @@ def build_model(
     encoder_weights: str | None = None,
     activation: str | None = None,
     *,
-    dynamic_img_size: bool = False,
     model_config: dict[str, Any] | None = None,
     stochastic_depth: float | None = None,
 ) -> nn.Module:
@@ -33,7 +40,6 @@ def build_model(
         n_classes: Number of output classes
         encoder_weights: Pre-trained weights for encoder
         activation: Activation function for output
-        dynamic_img_size: Whether to support dynamic image sizes
         model_config: Additional model-specific configuration parameters
         stochastic_depth: Drop path rate for stochastic depth (regularization).
 
@@ -106,6 +112,45 @@ def build_model(
             dropout=float(tsvit_config.get("dropout", 0.0)),
             emb_dropout=float(tsvit_config.get("emb_dropout", 0.0)),
             temporal_metadata_channels=int(tsvit_config.get("temporal_metadata_channels", 0)),
+        )
+
+    if model_type.upper() == "RS3MAMBA":
+        if RS3Mamba is None:
+            msg = (
+                f"RS3Mamba could not be imported. Check dependencies (e.g. mamba_ssm, kernels). "
+                f"Original error: {RS3MAMBA_IMPORT_ERROR}"
+            )
+            raise ImportError(msg)
+        rs3mamba_config = model_config or {}
+
+        model = RS3Mamba(
+            decode_channels=rs3mamba_config.get("decode_channels", 64),
+            dropout=rs3mamba_config.get("dropout", 0.1),
+            backbone_name=encoder_name or rs3mamba_config.get("backbone_name", "swsl_resnet18"),
+            pretrained=encoder_weights is not None,
+            window_size=rs3mamba_config.get("window_size", 8),
+            num_classes=n_classes,
+            in_channels=in_channels,
+            use_channel_attention=rs3mamba_config.get("use_channel_attention", True),
+        )
+
+        pretrain_path = rs3mamba_config.get("vssm_pretrain_path")
+        if pretrain_path:
+            model = load_pretrained_ckpt(model, pretrain_path)
+
+        return model
+
+    if model_type.upper() == "UNETFORMER":
+        unetformer_config = model_config or {}
+
+        return UNetFormer(
+            decode_channels=unetformer_config.get("decode_channels", 64),
+            dropout=unetformer_config.get("dropout", 0.1),
+            backbone_name=encoder_name or unetformer_config.get("backbone_name", "swsl_resnet18"),
+            pretrained=encoder_weights is not None,
+            window_size=unetformer_config.get("window_size", 8),
+            num_classes=n_classes,
+            in_channels=in_channels,
         )
 
     try:

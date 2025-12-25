@@ -231,7 +231,6 @@ class SentinelTrainEvalPipeline:
                 encoder_weights=config["model"].get("encoder_weights"),
                 in_channels=config["model"]["in_channels"],
                 n_classes=config["data"]["num_classes"],
-                dynamic_img_size=config["model"].get("dynamic_img_size", False),
                 model_config=config["model"],
             )
 

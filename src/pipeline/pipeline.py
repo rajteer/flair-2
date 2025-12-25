@@ -113,6 +113,8 @@ class TrainEvalPipeline:
                     "lr_scheduler": config["training"]["optimizer"]
                     .get("lr_scheduler", {})
                     .get("type", "None"),
+                    "accumulation_steps": config["training"].get("accumulation_steps", 1),
+                    "use_amp": config["training"].get("use_amp", False),
                 },
             )
 
@@ -265,7 +267,6 @@ class TrainEvalPipeline:
                 encoder_weights=config["model"]["encoder_weights"],
                 in_channels=len(config["data"]["selected_channels"]),
                 n_classes=config["data"]["num_classes"],
-                dynamic_img_size=config["model"].get("dynamic_img_size", False),
                 stochastic_depth=config["model"].get("stochastic_depth"),
             )
 
@@ -299,6 +300,8 @@ class TrainEvalPipeline:
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
                 num_classes=config["data"]["num_classes"],
+                accumulation_steps=config["training"].get("accumulation_steps", 1),
+                use_amp=config["training"].get("use_amp", False),
                 pruning_callback=pruning_callback,
             )
 
