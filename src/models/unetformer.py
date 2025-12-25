@@ -12,21 +12,16 @@ from __future__ import annotations
 
 import timm
 import torch
-
 from torch import nn
 from torch.nn import functional
 
-
 from src.models.common_blocks import (
+    WF,
     Block,
     Conv,
     ConvBN,
     ConvBNReLU,
     FeatureRefinementHead,
-    GlobalLocalAttention,
-    Mlp,
-    SeparableConvBN,
-    WF,
 )
 
 

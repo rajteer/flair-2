@@ -26,7 +26,6 @@ def build_model(
     encoder_weights: str | None = None,
     activation: str | None = None,
     *,
-    _dynamic_img_size: bool = False,
     model_config: dict[str, Any] | None = None,
     stochastic_depth: float | None = None,
 ) -> nn.Module:
@@ -41,7 +40,6 @@ def build_model(
         n_classes: Number of output classes
         encoder_weights: Pre-trained weights for encoder
         activation: Activation function for output
-        dynamic_img_size: Whether to support dynamic image sizes
         model_config: Additional model-specific configuration parameters
         stochastic_depth: Drop path rate for stochastic depth (regularization).
 

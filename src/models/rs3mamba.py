@@ -14,13 +14,13 @@ import re
 
 import timm
 import torch
+from einops import rearrange
 from timm.layers import DropPath, trunc_normal_
 from torch import nn
 from torch.nn import functional
-from einops import rearrange
 
-from src.models.vssm_encoder import VSSMEncoder
 from src.models.common_blocks import (
+    WF,
     Block,
     Conv,
     ConvBN,
@@ -28,8 +28,8 @@ from src.models.common_blocks import (
     FeatureRefinementHead,
     Mlp,
     SeparableConvBN,
-    WF,
 )
+from src.models.vssm_encoder import VSSMEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,11 @@ class ChannelAttention(nn.Module):
                 max_pool = functional.adaptive_max_pool2d(x, (1, 1))
                 channel_att_raw = self.mlp(max_pool)
             elif pool_type == "soft":
-                soft_pool = SoftPool2d(x.size(2), stride=x.size(2))
-                soft_pool_out = soft_pool(x)
+                # Soft pooling: use weighted exponential average
+                x_exp = torch.exp(x)
+                x_exp_pool = functional.adaptive_avg_pool2d(x_exp, (1, 1))
+                x_weighted = functional.adaptive_avg_pool2d(x_exp * x, (1, 1))
+                soft_pool_out = x_weighted / x_exp_pool
                 channel_att_raw = self.mlp(soft_pool_out)
             else:
                 continue
@@ -214,7 +217,7 @@ class FusionAttention(nn.Module):
         attn = attn[:, :, :H, :W]
 
         out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + self.attn_y(
-            functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect")
+            functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"),
         )
 
         out = out + local

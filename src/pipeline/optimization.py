@@ -55,7 +55,7 @@ class OptimizationPipeline:
 
             if param_type == "float":
                 val = trial.suggest_float(
-                    name, item["low"], item["high"], log=item.get("log", False)
+                    name, item["low"], item["high"], log=item.get("log", False),
                 )
             elif param_type == "int":
                 val = trial.suggest_int(name, item["low"], item["high"], log=item.get("log", False))
