@@ -140,7 +140,7 @@ class TrainEvalPipeline:
 
             norm_cfg = config["data"].get("normalization")
             image_transform = None
-            if norm_cfg is not None:
+            if norm_cfg is not None and norm_cfg.get("enabled", True):
                 image_transform = MultiChannelNormalize(
                     mean=norm_cfg["mean"],
                     std=norm_cfg["std"],

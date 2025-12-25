@@ -25,6 +25,7 @@ data:
     - 4
 
   normalization:
+    enabled: true
     mean: [0.485, 0.456, 0.406, 0.409878, 0.068752]
     std:  [0.229, 0.224, 0.225, 0.155107,  0.118672]
     scale_to_unit: [true, true, true, true, false]
