@@ -28,6 +28,7 @@ def build_model(
     *,
     _dynamic_img_size: bool = False,
     model_config: dict[str, Any] | None = None,
+    stochastic_depth: float | None = None,
 ) -> nn.Module:
     """Build a segmentation model.
 
@@ -42,6 +43,7 @@ def build_model(
         activation: Activation function for output
         dynamic_img_size: Whether to support dynamic image sizes
         model_config: Additional model-specific configuration parameters
+        stochastic_depth: Drop path rate for stochastic depth (regularization).
 
     Returns:
         Initialized model
@@ -159,12 +161,17 @@ def build_model(
         msg = f"Unknown model type: {model_type}"
         raise ValueError(msg) from err
 
+    kwargs = {}
+    if stochastic_depth is not None:
+        kwargs["drop_path_rate"] = stochastic_depth
+
     return model_class(
         encoder_name=encoder_name,
         encoder_weights=encoder_weights,
         in_channels=in_channels,
         classes=n_classes,
         activation=activation,
+        **kwargs,
     )
 
 

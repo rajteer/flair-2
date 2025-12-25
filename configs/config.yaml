@@ -16,6 +16,7 @@ data:
   num_classes: 13
   batch_size: 4
   num_workers: 0
+  pin_memory: true
   selected_channels:
     - 0
     - 1
@@ -39,6 +40,7 @@ data:
   use_monthly_average: true
   data_augmentation:
     apply_augmentations: true
+    clamp: true
     augmentations:
       hflip:
         prob: 0.5
@@ -61,6 +63,26 @@ data:
         range:
           - 0.8
           - 1.2
+      elevation_shift:
+        prob: 0.5
+        range:
+          - -10.0
+          - 10.0
+      elevation_scale:
+        prob: 0.5
+        range:
+          - 0.9
+          - 1.1
+      elevation_dropout:
+        prob: 0.1
+        p: 0.1
+      chessmix:
+        prob: 0.5
+        grid_sizes:
+          - 4
+        apply_transforms: true
+        ignore_index: 12
+        class_counts: []
 mlflow:
   name: aerial_images-only
   run_name: DeepLabV3Plus_efficientnet_b5_cross_entropy_split_45

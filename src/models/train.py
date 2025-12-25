@@ -10,6 +10,7 @@ import torch
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torchinfo import summary
 
+from src.data.pre_processing.chessmix import ChessMix
 from src.data.pre_processing.data_augmentation import FlairAugmentation
 from src.utils.mlflow_utils import log_metrics_to_mlflow, log_model_to_mlflow
 from src.utils.model_stats import compute_model_complexity
@@ -122,6 +123,7 @@ def _train_epoch_temporal(
         pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
+        optimizer.zero_grad()
         if supports_pad_mask:
             with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
@@ -154,6 +156,7 @@ def _train_epoch_standard(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     augmenter: FlairAugmentation | None = None,
+    chessmix: ChessMix | None = None,
     accumulation_steps: int = 1,
     use_amp: bool = False,
 ) -> float:
@@ -172,6 +175,9 @@ def _train_epoch_standard(
 
         if augmenter is not None:
             x, y = augmenter(x, y)
+
+        if chessmix is not None:
+            x, y = chessmix(x, y)
 
         with torch.amp.autocast(device_type=device_type, enabled=use_amp):
             outputs = model(x)
@@ -258,9 +264,10 @@ def train(
     *,
     use_amp: bool = False,
     apply_augmentations: bool = True,
-    augmentation_config: dict[str, Any] | None = None,
+    data_config: dict[str, Any] | None = None,
     log_evaluation_metrics: bool = True,
     log_model: bool = True,
+    pruning_callback: Any | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -277,7 +284,8 @@ def train(
         scheduler: Optional learning rate scheduler.
         apply_augmentations: Whether to apply augmentations to the training data.
             Defaults to True.
-        augmentation_config: Configuration for augmentations. Defaults to None.
+        data_config: Full data configuration dict (contains augmentation config,
+            normalization settings, and channel selections).
         epochs: Maximum number of epochs to train. Defaults to 100.
         patience: Early stopping patience. Defaults to 20.
         num_classes: Number of classes in the segmentation task. Defaults to 13.
@@ -313,16 +321,19 @@ def train(
     losses_train: list[float] = []
     losses_val: list[float] = []
 
-    augmenter = (
-        FlairAugmentation(
-            augmentation_config or {},
-            clamp=True,
-            clamp_min=0.0,
-            clamp_max=255.0,
-        )
-        if apply_augmentations
-        else None
-    )
+    augmenter = FlairAugmentation(data_config) if apply_augmentations and data_config else None
+    chessmix = None
+    if apply_augmentations and data_config:
+        aug_config = data_config.get("data_augmentation", {}).get("augmentations", {})
+        if "chessmix" in aug_config:
+            cm_cfg = aug_config["chessmix"]
+            chessmix = ChessMix(
+                prob=cm_cfg.get("prob", 0.5),
+                grid_sizes=cm_cfg.get("grid_sizes", [4]),
+                ignore_index=cm_cfg.get("ignore_index", 12),
+                class_counts=cm_cfg.get("class_counts", None),
+                num_classes=data_config.get("num_classes", 13),
+            )
     best_model_state = None
 
     is_temporal_model = sample_inputs.ndim == TEMPORAL_MODEL_NDIM
@@ -355,6 +366,7 @@ def train(
                 optimizer,
                 device,
                 augmenter,
+                chessmix,
                 accumulation_steps,
                 use_amp,
             )
@@ -370,6 +382,9 @@ def train(
                 metrics={"train_loss": loss_epoch, "val_loss": val_loss},
                 step=epoch,
             )
+
+        if pruning_callback is not None:
+            pruning_callback(val_loss, epoch)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from ..dataset_utils import get_path_mapping
 from .sentinel_utils import (
     MAX_ORIGINAL_CLASS,
     OTHER_CLASS,
@@ -16,7 +17,6 @@ from .sentinel_utils import (
     extract_domain_zone,
     extract_sentinel_patch,
     filter_cloudy_snowy_timesteps,
-    get_path_mapping,
     load_centroids_mapping,
     load_sentinel_dates,
     load_sentinel_superpatch_paths,

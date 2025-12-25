@@ -1,5 +1,10 @@
 """Dataset utilities for FLAIR-2 including collate functions for variable-length sequences."""
 
+import fnmatch
+import os
+import re
+from pathlib import Path
+
 import torch
 
 
@@ -171,3 +176,50 @@ def collate_standard(
     sample_ids = [item[2] for item in batch]
 
     return images, masks, None, sample_ids, None
+
+
+def get_unique_id(filename: str) -> str:
+    """Extract unique ID from filename.
+
+    Args:
+        filename: Name of the file (e.g., "IMG_00001.tif" or "MSK_00001.tif")
+
+    Returns:
+        Extracted numeric ID from the filename
+
+    Raises:
+        ValueError: If no numeric ID can be extracted
+
+    """
+    match = re.search(r"(\d+)", filename)
+    if match is None:
+        msg = f"Could not extract numeric ID from filename: {filename}"
+        raise ValueError(msg)
+    return match.group(1)
+
+
+def get_path_mapping(directory: Path, pattern: str) -> dict[str, Path]:
+    """Create a mapping from unique IDs to file paths.
+
+    Args:
+        directory: The directory to search
+        pattern: The glob pattern to match files (e.g., "IMG_*.tif")
+
+    Returns:
+        A dictionary mapping unique IDs to file paths. The dictionary is sorted by ID.
+
+    """
+    mapping = {}
+    directory_path = Path(directory)
+
+    for root, _, files in os.walk(directory_path, followlinks=True):
+        for name in files:
+            if fnmatch.fnmatch(name, pattern):
+                path = Path(root) / name
+                try:
+                    unique_id = get_unique_id(name)
+                    mapping[unique_id] = path
+                except ValueError:
+                    continue
+
+    return dict(sorted(mapping.items()))
