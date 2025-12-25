@@ -235,6 +235,7 @@ class SentinelTrainEvalPipeline:
             )
 
             model.to(device)
+            criterion.to(device)
 
             optimizer = build_optimizer(
                 model=model,
