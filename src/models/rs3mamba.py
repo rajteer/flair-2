@@ -17,6 +17,7 @@ import torch
 from timm.layers import DropPath, trunc_normal_
 from torch import nn
 from torch.nn import functional
+from einops import rearrange
 
 from src.models.vssm_encoder import VSSMEncoder
 
@@ -126,7 +127,7 @@ class SeparableConvBN(nn.Sequential):
                 groups=in_channels,
                 bias=False,
             ),
-            norm_layer(out_channels),
+            norm_layer(in_channels),
             nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
         )
 
@@ -233,8 +234,6 @@ class GlobalLocalAttention(nn.Module):
         x = self.pad(x, self.ws)
         B, C, Hp, Wp = x.shape
         qkv = self.qkv(x)
-
-        from einops import rearrange
 
         q, k, v = rearrange(
             qkv,
@@ -469,8 +468,6 @@ class FusionAttention(nn.Module):
         B, C, Hp, Wp = x.shape
         qkv = self.qkv(x)
 
-        from einops import rearrange
-
         q, k, v = rearrange(
             qkv,
             "b (qkv h d) (hh ws1) (ww ws2) -> qkv (b hh ww) h (ws1 ws2) d",
@@ -531,15 +528,18 @@ class FusionBlock(nn.Module):
         mlp_ratio: float = 4.0,
         qkv_bias: bool = False,
         drop: float = 0.0,
-        attn_drop: float = 0.0,
         drop_path: float = 0.0,
         act_layer: type[nn.Module] = nn.ReLU6,
         norm_layer: type[nn.Module] = nn.BatchNorm2d,
         window_size: int = 8,
+        use_channel_attention: bool = True,
     ) -> None:
         super().__init__()
+        self.use_channel_attention = use_channel_attention
         self.normx = norm_layer(dim)
         self.normy = norm_layer(ssmdims)
+        if self.use_channel_attention:
+            self.ca = ChannelAttention(dim)
         self.attn = FusionAttention(
             dim,
             ssmdims,
@@ -560,7 +560,12 @@ class FusionBlock(nn.Module):
         self.norm2 = norm_layer(dim)
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        x = x + self.drop_path(self.attn(self.normx(x), self.normy(y)))
+        if self.use_channel_attention:
+            x_norm = self.ca(self.normx(x))
+        else:
+            x_norm = self.normx(x)
+
+        x = x + self.drop_path(self.attn(x_norm, self.normy(y)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
@@ -745,7 +750,7 @@ class Decoder(nn.Module):
 
         This initializes weights for convolutional layers in the decoder.
         """
-        for m in self.children():
+        for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, a=1)
                 if m.bias is not None:
@@ -778,6 +783,7 @@ class RS3Mamba(nn.Module):
         window_size: int = 8,
         num_classes: int = 6,
         in_channels: int = 3,
+        use_channel_attention: bool = True,
     ) -> None:
         """Initialize the RS3Mamba model.
 
@@ -789,6 +795,7 @@ class RS3Mamba(nn.Module):
             window_size: Window size used for attention modules.
             num_classes: Number of output classes.
             in_channels: Number of input image channels.
+            use_channel_attention: Whether to use Channel Attention in FusionBlock.
 
         """
         super().__init__()
@@ -825,7 +832,11 @@ class RS3Mamba(nn.Module):
         self.Fuse = nn.ModuleList()
         self.decoder = Decoder(encoder_channels, decode_channels, dropout, window_size, num_classes)
         for i in range(4):
-            fuse = FusionBlock(encoder_channels[i], ssm_dims[i])
+            fuse = FusionBlock(
+                encoder_channels[i],
+                ssm_dims[i],
+                use_channel_attention=use_channel_attention,
+            )
             self.Fuse.append(fuse)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

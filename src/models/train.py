@@ -110,7 +110,7 @@ def _train_epoch_temporal(
 
     device_type = "cuda" if device.type == "cuda" else "cpu"
     scaler_enabled = use_amp and device.type == "cuda"
-    scaler = torch.amp.GradScaler(device_type, enabled=scaler_enabled)
+    scaler = torch.amp.GradScaler(device=device_type, enabled=scaler_enabled)
     total_loss = 0.0
 
     forward_sig = inspect.signature(model.forward)
@@ -126,14 +126,14 @@ def _train_epoch_temporal(
             with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
                 loss = criterion(outputs, y)
-                loss_value = loss.item()
                 loss = loss / accumulation_steps
+                loss_value = loss.item()
         else:
             with torch.amp.autocast(device_type=device_type, enabled=use_amp):
                 outputs = model(x, batch_positions=batch_positions)
                 loss = criterion(outputs, y)
-                loss_value = loss.item()
                 loss = loss / accumulation_steps
+                loss_value = loss.item()
 
         scaler.scale(loss).backward()
 
@@ -144,7 +144,7 @@ def _train_epoch_temporal(
 
         total_loss += float(loss_value)
 
-    return total_loss / len(loader)
+    return (total_loss * accumulation_steps) / len(loader)
 
 
 def _train_epoch_standard(
@@ -163,7 +163,7 @@ def _train_epoch_standard(
 
     device_type = "cuda" if device.type == "cuda" else "cpu"
     scaler_enabled = use_amp and device.type == "cuda"
-    scaler = torch.amp.GradScaler(device_type, enabled=scaler_enabled)
+    scaler = torch.amp.GradScaler(device=device_type, enabled=scaler_enabled)
     total_loss = 0.0
 
     for batch_idx, batch_data in enumerate(loader):
@@ -176,8 +176,8 @@ def _train_epoch_standard(
         with torch.amp.autocast(device_type=device_type, enabled=use_amp):
             outputs = model(x)
             loss = criterion(outputs, y)
-            loss_value = loss.item()
             loss = loss / accumulation_steps
+            loss_value = loss.item()
 
         scaler.scale(loss).backward()
 
@@ -188,7 +188,7 @@ def _train_epoch_standard(
 
         total_loss += float(loss_value)
 
-    return total_loss / len(loader)
+    return (total_loss * accumulation_steps) / len(loader)
 
 
 def _validate_epoch_temporal(

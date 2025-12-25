@@ -114,6 +114,10 @@ def build_model(
         )
 
     if model_type.upper() == "RS3MAMBA":
+        if RS3Mamba is None:
+            raise ImportError(
+                "RS3Mamba or load_pretrained_ckpt could not be imported. Please check dependencies (e.g. mamba_ssm, kernels)."
+            )
         rs3mamba_config = model_config or {}
 
         model = RS3Mamba(
@@ -124,6 +128,7 @@ def build_model(
             window_size=rs3mamba_config.get("window_size", 8),
             num_classes=n_classes,
             in_channels=in_channels,
+            use_channel_attention=rs3mamba_config.get("use_channel_attention", True),
         )
 
         pretrain_path = rs3mamba_config.get("vssm_pretrain_path")
