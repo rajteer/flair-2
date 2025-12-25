@@ -200,12 +200,16 @@ def build_optimizer(
 def build_lr_scheduler(
     optimizer: optim.Optimizer,
     scheduler_config: dict[str, Any] | None = None,
+    steps_per_epoch: int | None = None,
+    epochs: int | None = None,
 ) -> LRScheduler | None:
     """Build and return a learning rate scheduler.
 
     Args:
         optimizer: Optimizer to wrap with the scheduler.
         scheduler_config: Mapping containing the scheduler ``type`` and optional ``args``.
+        steps_per_epoch: Number of steps per epoch (required for OneCycleLR if not in args).
+        epochs: Total number of training epochs (required for OneCycleLR if not in args).
 
     Returns:
         Instantiated scheduler or ``None`` when configuration is missing.
@@ -215,7 +219,14 @@ def build_lr_scheduler(
         return None
 
     scheduler_type = scheduler_config.get("type")
-    scheduler_args = scheduler_config.get("args", {})
+    scheduler_args = dict(scheduler_config.get("args", {}))
+
+    # OneCycleLR requires steps_per_epoch and epochs
+    if scheduler_type == "OneCycleLR":
+        if scheduler_args.get("steps_per_epoch") is None and steps_per_epoch is not None:
+            scheduler_args["steps_per_epoch"] = steps_per_epoch
+        if scheduler_args.get("epochs") is None and epochs is not None:
+            scheduler_args["epochs"] = epochs
 
     try:
         scheduler_class = getattr(lr_schedulers, scheduler_type)

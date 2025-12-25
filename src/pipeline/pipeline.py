@@ -283,7 +283,9 @@ class TrainEvalPipeline:
 
             lr_scheduler = build_lr_scheduler(
                 optimizer=optimizer,
-                scheduler_config=config["training"]["optimizer"].get("lr_scheduler"),
+                scheduler_config=config["training"].get("lr_scheduler"),
+                steps_per_epoch=len(train_loader),
+                epochs=config["training"]["epochs"],
             )
 
             logger.info("Starting training model %s", config["model"]["model_type"])
