@@ -101,17 +101,11 @@ class SentinelTrainEvalPipeline:
                     "weight_decay": config["training"]["optimizer"]["weight_decay"],
                     "epochs": config["training"]["epochs"],
                     "patience": config["training"]["early_stopping_patience"],
-                    "lr_scheduler": config["training"]["optimizer"]
-                    .get("lr_scheduler", {})
-                    .get("type", "None"),
+                    "lr_scheduler": config["training"].get("lr_scheduler", {}).get("type", "None"),
                 },
             )
 
-            if (
-                scheduler_args := config["training"]["optimizer"]
-                .get("lr_scheduler", {})
-                .get("args")
-            ):
+            if scheduler_args := config["training"].get("lr_scheduler", {}).get("args"):
                 mlflow.log_param("lr_scheduler_args", json.dumps(scheduler_args))
 
             mlflow.log_params(
