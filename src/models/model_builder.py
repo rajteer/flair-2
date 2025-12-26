@@ -170,13 +170,13 @@ def build_model(
     if stochastic_depth is not None:
         kwargs["drop_path_rate"] = stochastic_depth
 
-    # Handle GroupNorm specially due to SMP initialization bug
     use_groupnorm_replacement = False
-    num_groups = 32  # default
+    num_groups = 32
     if isinstance(decoder_norm, dict) and decoder_norm.get("type") == "groupnorm":
         use_groupnorm_replacement = True
         num_groups = decoder_norm.get("num_groups", 32)
-        # Don't pass decoder_use_norm, we'll replace BatchNorm after creation
+    elif decoder_norm == "groupnorm":
+        use_groupnorm_replacement = True
     elif decoder_norm is not None:
         kwargs["decoder_use_norm"] = decoder_norm
 

@@ -100,11 +100,17 @@ def _train_epoch_temporal(
     device: torch.device,
     accumulation_steps: int = 1,
     use_amp: bool = False,
+    scheduler: LRScheduler | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
     Temporal models receive batch_positions and pad_mask arguments.
     Note: Augmentations are not supported for temporal (5D) data.
+
+    Args:
+        scheduler: Optional step-level scheduler (e.g., OneCycleLR). If provided,
+            scheduler.step() is called after each optimizer step.
+
     """
     model.train()
     optimizer.zero_grad()
@@ -143,6 +149,9 @@ def _train_epoch_temporal(
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            # Step-level scheduler update (for OneCycleLR, etc.)
+            if scheduler is not None:
+                scheduler.step()
 
         total_loss += float(loss_value)
 
@@ -159,8 +168,15 @@ def _train_epoch_standard(
     chessmix: ChessMix | None = None,
     accumulation_steps: int = 1,
     use_amp: bool = False,
+    scheduler: LRScheduler | None = None,
 ) -> float:
-    """Train a standard (non-temporal) model for a single epoch and return average loss."""
+    """Train a standard (non-temporal) model for a single epoch and return average loss.
+
+    Args:
+        scheduler: Optional step-level scheduler (e.g., OneCycleLR). If provided,
+            scheduler.step() is called after each optimizer step.
+
+    """
     model.train()
     optimizer.zero_grad()
 
@@ -191,6 +207,9 @@ def _train_epoch_standard(
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            # Step-level scheduler update (for OneCycleLR, etc.)
+            if scheduler is not None:
+                scheduler.step()
 
         total_loss += float(loss_value)
 
@@ -347,6 +366,9 @@ def train(
         train_epoch_fn = _train_epoch_standard
         validate_epoch_fn = _validate_epoch_standard
 
+    is_step_scheduler = scheduler is not None and not isinstance(scheduler, ReduceLROnPlateau)
+    step_scheduler = scheduler if is_step_scheduler else None
+
     for epoch in range(epochs):
         if is_temporal_model:
             loss_epoch = train_epoch_fn(
@@ -357,6 +379,7 @@ def train(
                 device,
                 accumulation_steps,
                 use_amp,
+                step_scheduler,  # Pass step-level scheduler
             )
         else:
             loss_epoch = train_epoch_fn(
@@ -369,6 +392,7 @@ def train(
                 chessmix,
                 accumulation_steps,
                 use_amp,
+                step_scheduler,  # Pass step-level scheduler
             )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
@@ -398,11 +422,10 @@ def train(
                 logger.info("Early stopping at epoch %d.", epoch + 1)
                 break
 
-        if scheduler is not None:
-            if isinstance(scheduler, ReduceLROnPlateau):
-                scheduler.step(val_loss)
-            else:
-                scheduler.step()
+        # Only call epoch-level scheduler.step() for ReduceLROnPlateau
+        # Step-based schedulers (OneCycleLR, etc.) are updated in the training loop
+        if scheduler is not None and isinstance(scheduler, ReduceLROnPlateau):
+            scheduler.step(val_loss)
 
         if log_evaluation_metrics:
             current_lr = optimizer.param_groups[0]["lr"]
