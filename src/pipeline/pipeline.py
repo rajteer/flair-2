@@ -276,10 +276,15 @@ class TrainEvalPipeline:
                 betas=config["training"]["optimizer"]["betas"],
             )
 
+            accumulation_steps = config["training"].get("accumulation_steps", 1)
+            optimizer_steps_per_epoch = (
+                len(train_loader) + accumulation_steps - 1
+            ) // accumulation_steps
+
             lr_scheduler = build_lr_scheduler(
                 optimizer=optimizer,
                 scheduler_config=config["training"].get("lr_scheduler"),
-                steps_per_epoch=len(train_loader),
+                steps_per_epoch=optimizer_steps_per_epoch,
                 epochs=config["training"]["epochs"],
             )
 

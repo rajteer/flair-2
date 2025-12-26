@@ -9,6 +9,8 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
 
+logger = logging.getLogger(__name__)
+
 try:
     from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
 except ImportError as e:
@@ -291,11 +293,14 @@ def build_lr_scheduler(
         raise ValueError(msg) from err
 
     scheduler = scheduler_class(optimizer, **scheduler_args)
-    logging.getLogger(__name__).info(
+    logger.info(
         "Created LR scheduler: %s with args: %s",
         scheduler_type,
         scheduler_args,
     )
+    # Log initial LR to help debug
+    initial_lr = optimizer.param_groups[0]["lr"]
+    logger.info("Initial learning rate after scheduler creation: %.8f", initial_lr)
     return scheduler
 
 
