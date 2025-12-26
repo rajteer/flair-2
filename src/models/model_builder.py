@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import segmentation_models_pytorch as smp
@@ -168,10 +169,18 @@ def build_model(
     kwargs = {}
     if stochastic_depth is not None:
         kwargs["drop_path_rate"] = stochastic_depth
-    if decoder_norm is not None:
+
+    # Handle GroupNorm specially due to SMP initialization bug
+    use_groupnorm_replacement = False
+    num_groups = 32  # default
+    if isinstance(decoder_norm, dict) and decoder_norm.get("type") == "groupnorm":
+        use_groupnorm_replacement = True
+        num_groups = decoder_norm.get("num_groups", 32)
+        # Don't pass decoder_use_norm, we'll replace BatchNorm after creation
+    elif decoder_norm is not None:
         kwargs["decoder_use_norm"] = decoder_norm
 
-    return model_class(
+    model = model_class(
         encoder_name=encoder_name,
         encoder_weights=encoder_weights,
         in_channels=in_channels,
@@ -179,6 +188,45 @@ def build_model(
         activation=activation,
         **kwargs,
     )
+
+    if use_groupnorm_replacement:
+        _replace_batchnorm_with_groupnorm(model.decoder, num_groups=num_groups)
+        logging.getLogger(__name__).info(
+            "Replaced BatchNorm2d with GroupNorm (num_groups=%d) in decoder",
+            num_groups,
+        )
+
+    return model
+
+
+def _replace_batchnorm_with_groupnorm(
+    module: nn.Module,
+    num_groups: int = 32,
+) -> None:
+    """Replace all BatchNorm2d layers with GroupNorm in a module (in-place).
+
+    Args:
+        module: The module to modify.
+        num_groups: Number of groups for GroupNorm. Must divide num_channels.
+
+    """
+    for name, child in module.named_children():
+        if isinstance(child, nn.BatchNorm2d):
+            num_channels = child.num_features
+            # Ensure num_groups divides num_channels
+            effective_groups = min(num_groups, num_channels)
+            while num_channels % effective_groups != 0 and effective_groups > 1:
+                effective_groups -= 1
+
+            group_norm = nn.GroupNorm(
+                num_groups=effective_groups,
+                num_channels=num_channels,
+                eps=child.eps,
+                affine=child.affine,
+            )
+            setattr(module, name, group_norm)
+        else:
+            _replace_batchnorm_with_groupnorm(child, num_groups)
 
 
 def build_optimizer(
@@ -242,7 +290,13 @@ def build_lr_scheduler(
         msg = f"Unknown LR scheduler type: {scheduler_type}"
         raise ValueError(msg) from err
 
-    return scheduler_class(optimizer, **scheduler_args)
+    scheduler = scheduler_class(optimizer, **scheduler_args)
+    logging.getLogger(__name__).info(
+        "Created LR scheduler: %s with args: %s",
+        scheduler_type,
+        scheduler_args,
+    )
+    return scheduler
 
 
 def build_loss_function(
