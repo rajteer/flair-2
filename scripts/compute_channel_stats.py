@@ -53,18 +53,18 @@ def compute_stats(
             logger.warning("Skipping %s: expected multi-channel image", path)
             continue
 
-        if img.shape[0] <= 8 and img.ndim == 3:
-            img = np.transpose(img, (1, 2, 0))  # (C, H, W) -> (H, W, C)
-
         if img.ndim != 3:
             logger.warning("Skipping %s: unsupported shape %s", path, img.shape)
             continue
 
-        if elev_channel >= img.shape[2]:
+        if img.shape[-1] <= img.shape[0] and img.shape[-1] <= img.shape[1]:
+            img = np.transpose(img, (2, 0, 1))  # (H, W, C) -> (C, H, W)
+
+        if elev_channel >= img.shape[0]:
             logger.warning("Skipping %s: not enough channels (shape %s)", path, img.shape)
             continue
 
-        elev_raw = img[..., elev_channel].astype(np.float64)
+        elev_raw = img[elev_channel].astype(np.float64)
         cur_min = float(elev_raw.min())
         cur_max = float(elev_raw.max())
         elev_min = cur_min if elev_min is None else min(elev_min, cur_min)
@@ -88,30 +88,31 @@ def compute_stats(
             logger.warning("Skipping %s: expected multi-channel image", path)
             continue
 
-        if img.shape[0] <= 8 and img.ndim == 3:
-            img = np.transpose(img, (1, 2, 0))
-
         if img.ndim != 3:
             logger.warning("Skipping %s: unsupported shape %s", path, img.shape)
             continue
 
-        if nir_channel >= img.shape[2] or elev_channel >= img.shape[2]:
+        # Convert to (C, H, W) format to match FlairDataset
+        if img.shape[-1] <= img.shape[0] and img.shape[-1] <= img.shape[1]:
+            img = np.transpose(img, (2, 0, 1))  # (H, W, C) -> (C, H, W)
+
+        if nir_channel >= img.shape[0] or elev_channel >= img.shape[0]:
             logger.warning("Skipping %s: not enough channels (shape %s)", path, img.shape)
             continue
 
-        nir_raw = img[..., nir_channel].astype(np.float64)
-        elev_raw = img[..., elev_channel].astype(np.float64)
+        nir_raw = img[nir_channel].astype(np.float64)  # Using dim 0 for channels
+        elev_raw = img[elev_channel].astype(np.float64)
 
         nir = nir_raw / 255.0
 
         elev = (elev_raw - elev_min) / (elev_max - elev_min)
 
         nir_sum += nir.sum()
-        nir_sq_sum += (nir ** 2).sum()
+        nir_sq_sum += (nir**2).sum()
         nir_count += nir.size
 
         elev_sum += elev.sum()
-        elev_sq_sum += (elev ** 2).sum()
+        elev_sq_sum += (elev**2).sum()
         elev_count += elev.size
 
     if nir_count == 0 or elev_count == 0:
@@ -126,23 +127,24 @@ def compute_stats(
     elev_var = elev_sq_sum / elev_count - elev_mean**2
     elev_std = float(np.sqrt(max(elev_var, 0.0)))
 
-    print("Computed statistics in scaled space:")
-    print("  NIR assumed scaled as nir/255.0")
-    print("  Elevation scaled using global raw range to [0, 1]")
-    print(f"  nir_mean_scaled:  {nir_mean:.6f}")
-    print(f"  nir_std_scaled:   {nir_std:.6f}")
-    print(f"  elev_mean_scaled: {elev_mean:.6f}")
-    print(f"  elev_std_scaled:  {elev_std:.6f}")
-    print(f"  elev_min_raw:     {elev_min:.6f}")
-    print(f"  elev_max_raw:     {elev_max:.6f}")
+    logger.info("Computed statistics in scaled space:")
+    logger.info("  NIR assumed scaled as nir/255.0")
+    logger.info("  Elevation scaled using global raw range to [0, 1]")
+    logger.info("  nir_mean_scaled:  %.6f", nir_mean)
+    logger.info("  nir_std_scaled:   %.6f", nir_std)
+    logger.info("  elev_mean_scaled: %.6f", elev_mean)
+    logger.info("  elev_std_scaled:  %.6f", elev_std)
+    logger.info("  elev_min_raw:     %.6f", elev_min)
+    logger.info("  elev_max_raw:     %.6f", elev_max)
 
-    print("\nYAML snippet for config.normalization (example for RGB+NIR+elevation):")
-    print("normalization:")
-    print("  mean: [0.485, 0.456, 0.406, " f"{nir_mean:.6f}, {elev_mean:.6f}]")
-    print("  std:  [0.229, 0.224, 0.225, " f"{nir_std:.6f},  {elev_std:.6f}]")
-    print("  scale_to_unit: [true, true, true, true, false]")
-    print("  elevation_range: [" f"{elev_min:.6f}, {elev_max:.6f}]")
-    print("  elevation_channel_index: 4")
+    logger.info("")
+    logger.info("YAML snippet for config.normalization (example for RGB+NIR+elevation):")
+    logger.info("normalization:")
+    logger.info("  mean: [0.485, 0.456, 0.406, %.6f, %.6f]", nir_mean, elev_mean)
+    logger.info("  std:  [0.229, 0.224, 0.225, %.6f,  %.6f]", nir_std, elev_std)
+    logger.info("  scale_to_unit: [true, true, true, true, false]")
+    logger.info("  elevation_range: [%.6f, %.6f]", elev_min, elev_max)
+    logger.info("  elevation_channel_index: 4")
 
 
 def main() -> None:
@@ -170,7 +172,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
     images_dir = Path(args.images_dir).expanduser().resolve()
-    compute_stats(images_dir=images_dir, nir_channel=args.nir_channel, elev_channel=args.elev_channel)
+    compute_stats(
+        images_dir=images_dir, nir_channel=args.nir_channel, elev_channel=args.elev_channel
+    )
 
 
 if __name__ == "__main__":
