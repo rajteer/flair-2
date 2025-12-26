@@ -90,6 +90,7 @@ class SentinelTrainEvalPipeline:
                     "model_type": config["model"]["model_type"],
                     "in_channels": config["model"]["in_channels"],
                     "n_classes": config["data"]["num_classes"],
+                    "stochastic_depth": config["model"].get("stochastic_depth"),
                 },
             )
 

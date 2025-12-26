@@ -99,6 +99,9 @@ class TrainEvalPipeline:
                     "encoder_weights": config["model"]["encoder_weights"],
                     "in_channels": len(config["data"]["selected_channels"]),
                     "n_classes": config["data"]["num_classes"],
+                    "activation": config["model"].get("activation"),
+                    "stochastic_depth": config["model"].get("stochastic_depth"),
+                    "decoder_norm": config["model"].get("decoder_norm"),
                 },
             )
 
