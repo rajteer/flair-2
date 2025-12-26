@@ -28,6 +28,7 @@ def build_model(
     *,
     model_config: dict[str, Any] | None = None,
     stochastic_depth: float | None = None,
+    decoder_norm: bool | str | dict[str, Any] | None = None,
 ) -> nn.Module:
     """Build a segmentation model.
 
@@ -42,6 +43,11 @@ def build_model(
         activation: Activation function for output
         model_config: Additional model-specific configuration parameters
         stochastic_depth: Drop path rate for stochastic depth (regularization).
+        decoder_norm: Decoder normalization config. Can be:
+            - True: use BatchNorm (default)
+            - False: no normalization
+            - str: 'batchnorm', 'groupnorm', 'layernorm', 'instancenorm'
+            - dict: {'type': 'groupnorm', 'num_groups': 8}
 
     Returns:
         Initialized model
@@ -162,6 +168,8 @@ def build_model(
     kwargs = {}
     if stochastic_depth is not None:
         kwargs["drop_path_rate"] = stochastic_depth
+    if decoder_norm is not None:
+        kwargs["decoder_use_norm"] = decoder_norm
 
     return model_class(
         encoder_name=encoder_name,

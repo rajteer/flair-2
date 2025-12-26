@@ -262,6 +262,7 @@ class TrainEvalPipeline:
                 in_channels=len(config["data"]["selected_channels"]),
                 n_classes=config["data"]["num_classes"],
                 stochastic_depth=config["model"].get("stochastic_depth"),
+                decoder_norm=config["model"].get("decoder_norm"),
             )
 
             model.to(device)
