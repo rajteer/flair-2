@@ -229,10 +229,21 @@ def main() -> None:
         no_stdout_logs=False,
     )
 
+    logger.info("=" * 60)
+    logger.info("Optuna optimization pipeline starting")
+    logger.info("Base config: %s", args.config)
+    logger.info("Optimization config: %s", args.opt_config)
+    logger.info("Log file: %s", args.log_file)
+    logger.info("=" * 60)
+
     optimization = OptimizationPipeline(
         base_config_path=Path(args.config),
         opt_config_path=Path(args.opt_config),
     )
+
+    logger.info("OptimizationPipeline initialized successfully")
+    logger.info("Study name: %s, Trials: %d", optimization.study_name, optimization.n_trials)
+
     optimization.run()
 
 

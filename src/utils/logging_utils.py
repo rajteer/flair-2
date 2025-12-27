@@ -2,6 +2,20 @@ import logging
 import sys
 from pathlib import Path
 
+
+class FlushingFileHandler(logging.FileHandler):
+    """A FileHandler that flushes after every log record.
+
+    This is crucial for HPC environments where processes may be killed
+    unexpectedly, ensuring no log messages are lost in the buffer.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Emit a record and immediately flush the stream."""
+        super().emit(record)
+        self.flush()
+
+
 LOG_FORMATTER = logging.Formatter(
     "%(asctime)s:%(levelname)s:%(threadName)s:%(name)s::  %(message)s",
 )
@@ -19,7 +33,9 @@ def setup_logging(
 
     if log_file.is_file():
         log_file.unlink()
-    log_file_handler = logging.FileHandler(log_file, mode="a")
+    # Use FlushingFileHandler to ensure logs are written immediately
+    # This prevents log loss when HPC jobs are killed unexpectedly
+    log_file_handler = FlushingFileHandler(log_file, mode="a")
     log_file_handler.setFormatter(log_formatter)
     root_logger.addHandler(log_file_handler)
 
