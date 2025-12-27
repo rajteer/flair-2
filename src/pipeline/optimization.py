@@ -3,11 +3,14 @@
 import argparse
 import copy
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import optuna
 from optuna.integration.mlflow import MLflowCallback
+from optuna.visualization import plot_param_importances
 
 from src.pipeline.pipeline import TrainEvalPipeline
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
@@ -82,7 +85,7 @@ class OptimizationPipeline:
         def pruning_callback(value: float, step: int) -> None:
             trial.report(value, step)
             if trial.should_prune():
-                raise optuna.TrialPruned()
+                raise optuna.TrialPruned
 
         try:
             pipeline = TrainEvalPipeline(run_name=run_name, logs_dir="logs_optuna")
@@ -93,6 +96,51 @@ class OptimizationPipeline:
         except Exception:
             logger.exception("Trial %d failed", trial.number)
             return float("inf")
+
+    def _plot_param_importances(
+        self,
+        study: optuna.Study,
+    ) -> None:
+        """Generate and log hyperparameter importance plot to MLflow.
+
+        Args:
+            study: Completed Optuna study.
+
+        """
+        min_trials_for_importance = 2
+        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+
+        if len(completed_trials) < min_trials_for_importance:
+            logger.warning(
+                "Not enough completed trials (%d) to compute hyperparameter importance. "
+                "Need at least %d.",
+                len(completed_trials),
+                min_trials_for_importance,
+            )
+            return
+
+        try:
+            fig = plot_param_importances(study)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                html_path = Path(tmpdir) / f"{study.study_name}_param_importances.html"
+                fig.write_html(str(html_path))
+                mlflow.log_artifact(str(html_path), artifact_path="optuna_plots")
+                logger.info("Logged hyperparameter importance plot (HTML) to MLflow")
+
+                try:
+                    png_path = Path(tmpdir) / f"{study.study_name}_param_importances.png"
+                    fig.write_image(str(png_path))
+                    mlflow.log_artifact(str(png_path), artifact_path="optuna_plots")
+                    logger.info("Logged hyperparameter importance plot (PNG) to MLflow")
+                except (ImportError, ValueError, OSError):
+                    logger.warning(
+                        "Could not save PNG (install kaleido: pip install kaleido). "
+                        "HTML version was logged successfully.",
+                    )
+
+        except Exception:
+            logger.exception("Failed to generate hyperparameter importance plot")
 
     def run(self) -> None:
         """Run the optimization."""
@@ -121,6 +169,14 @@ class OptimizationPipeline:
         logger.info("  Params: ")
         for key, value in trial.params.items():
             logger.info("    %s: %s", key, value)
+
+        mlflow.set_tracking_uri(mlflow_kwargs["tracking_uri"])
+        with mlflow.start_run(run_name=f"{self.study_name}_summary"):
+            mlflow.log_params({"study_name": self.study_name, "n_trials": self.n_trials})
+            mlflow.log_metrics({"best_val_loss": trial.value})
+            for key, value in trial.params.items():
+                mlflow.log_param(f"best_{key}", value)
+            self._plot_param_importances(study)
 
 
 def main() -> None:
