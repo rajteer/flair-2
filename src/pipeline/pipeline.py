@@ -266,6 +266,7 @@ class TrainEvalPipeline:
                 n_classes=config["data"]["num_classes"],
                 stochastic_depth=config["model"].get("stochastic_depth"),
                 decoder_norm=config["model"].get("decoder_norm"),
+                model_config=config["model"].get("model_config"),
             )
 
             model.to(device)

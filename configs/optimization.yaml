@@ -58,3 +58,68 @@ optimization:
       type: "float"
       low: 0.0
       high: 1.0
+
+  # Model-specific search spaces (only applied when model.model_type matches)
+  # Parameters are placed under model.model_config.* to be forwarded to the model builder
+  model_specific_search_space:
+    # SMP Unet parameters
+    unet:
+      - name: "model.model_config.decoder_channels"
+        type: "categorical"
+        choices:
+          - [256, 128, 64, 32, 16]
+          - [128, 64, 32, 16, 8]
+          - [512, 256, 128, 64, 32]
+      - name: "model.model_config.decoder_attention_type"
+        type: "categorical"
+        choices:
+          - null
+          - "scse"
+
+    # SMP Segformer parameters
+    segformer:
+      - name: "model.model_config.decoder_segmentation_channels"
+        type: "int"
+        low: 128
+        high: 512
+
+    # SMP DeepLabV3Plus parameters
+    deeplabv3plus:
+      - name: "model.model_config.decoder_channels"
+        type: "int"
+        low: 128
+        high: 512
+
+    # UNetFormer parameters (custom model)
+    unetformer:
+      - name: "model.model_config.decode_channels"
+        type: "int"
+        low: 32
+        high: 128
+      - name: "model.model_config.dropout"
+        type: "float"
+        low: 0.0
+        high: 0.5
+      - name: "model.model_config.window_size"
+        type: "categorical"
+        choices:
+          - 4
+          - 8
+          - 16
+
+    # RS3Mamba parameters (custom model)
+    rs3mamba:
+      - name: "model.model_config.decode_channels"
+        type: "int"
+        low: 32
+        high: 128
+      - name: "model.model_config.dropout"
+        type: "float"
+        low: 0.0
+        high: 0.5
+      - name: "model.model_config.window_size"
+        type: "categorical"
+        choices:
+          - 4
+          - 8
+          - 16

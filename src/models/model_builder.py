@@ -182,6 +182,11 @@ def build_model(
     elif decoder_norm is not None:
         kwargs["decoder_use_norm"] = decoder_norm
 
+    smp_config = model_config or {}
+    for key, value in smp_config.items():
+        if key not in kwargs:
+            kwargs[key] = value
+
     model = model_class(
         encoder_name=encoder_name,
         encoder_weights=encoder_weights,
@@ -215,7 +220,8 @@ def _replace_batchnorm_with_groupnorm(
     for name, child in module.named_children():
         if isinstance(child, nn.BatchNorm2d):
             num_channels = child.num_features
-            # Ensure num_groups divides num_channels
+            if num_channels == 0:
+                continue
             effective_groups = min(num_groups, num_channels)
             while num_channels % effective_groups != 0 and effective_groups > 1:
                 effective_groups -= 1
@@ -298,7 +304,6 @@ def build_lr_scheduler(
         scheduler_type,
         scheduler_args,
     )
-    # Log initial LR to help debug
     initial_lr = optimizer.param_groups[0]["lr"]
     logger.info("Initial learning rate after scheduler creation: %.8f", initial_lr)
     return scheduler

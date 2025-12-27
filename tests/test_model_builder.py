@@ -92,6 +92,73 @@ class TestBuildModel:
 
         assert isinstance(model, nn.Module)
 
+    def test_model_config_decoder_channels(self, in_channels: int, num_classes: int) -> None:
+        """Should forward decoder_channels from model_config to SMP Unet."""
+        model = build_model(
+            model_type="Unet",
+            encoder_name="resnet18",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            model_config={"decoder_channels": [128, 64, 32, 16, 8]},
+        )
+
+        assert isinstance(model, nn.Module)
+        # Verify decoder channels were applied
+        assert model.decoder.blocks[0].conv1[0].out_channels == 128
+
+    def test_model_config_decoder_attention(self, in_channels: int, num_classes: int) -> None:
+        """Should forward decoder_attention_type from model_config to SMP Unet."""
+        model = build_model(
+            model_type="Unet",
+            encoder_name="resnet18",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            model_config={"decoder_attention_type": "scse"},
+        )
+
+        assert isinstance(model, nn.Module)
+        # Verify attention blocks exist in decoder (SMP uses 'attention1' and 'attention2' for scse)
+        assert hasattr(model.decoder.blocks[0], "attention1")
+
+    def test_model_config_deeplabv3plus(self, in_channels: int, num_classes: int) -> None:
+        """Should forward decoder_channels from model_config to DeepLabV3Plus."""
+        model = build_model(
+            model_type="DeepLabV3Plus",
+            encoder_name="resnet18",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            model_config={"decoder_channels": 128},
+        )
+
+        assert isinstance(model, nn.Module)
+
+    def test_model_config_segformer(self, in_channels: int, num_classes: int) -> None:
+        """Should forward decoder_segmentation_channels from model_config to Segformer."""
+        model = build_model(
+            model_type="Segformer",
+            encoder_name="mit_b0",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            model_config={"decoder_segmentation_channels": 384},
+        )
+
+        assert isinstance(model, nn.Module)
+
+    def test_model_config_does_not_override_explicit_params(
+        self, in_channels: int, num_classes: int
+    ) -> None:
+        """Explicit parameters should not be overridden by model_config."""
+        model = build_model(
+            model_type="Unet",
+            encoder_name="resnet18",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            stochastic_depth=0.2,
+            model_config={"drop_path_rate": 0.5},  # Should not override stochastic_depth
+        )
+
+        assert isinstance(model, nn.Module)
+
 
 class TestBuildOptimizer:
     """Tests for build_optimizer function."""

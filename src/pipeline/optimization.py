@@ -51,27 +51,44 @@ class OptimizationPipeline:
     def _suggest_params(self, trial: optuna.Trial, config: dict[str, Any]) -> None:
         """Suggest parameters based on configuration and update the config dict."""
         search_space = self.opt_config["optimization"]["search_space"]
+        model_specific = self.opt_config["optimization"].get("model_specific_search_space", {})
 
+        # Suggest base (shared) parameters
         for item in search_space:
-            name = item["name"]
-            param_type = item["type"]
+            self._suggest_single_param(trial, config, item)
 
-            if param_type == "float":
-                val = trial.suggest_float(
-                    name,
-                    item["low"],
-                    item["high"],
-                    log=item.get("log", False),
-                )
-            elif param_type == "int":
-                val = trial.suggest_int(name, item["low"], item["high"], log=item.get("log", False))
-            elif param_type == "categorical":
-                val = trial.suggest_categorical(name, item["choices"])
-            else:
-                msg = f"Unknown parameter type: {param_type}"
-                raise ValueError(msg)
+        # Suggest model-specific parameters if defined
+        model_type = config.get("model", {}).get("model_type", "").lower()
+        if model_type in model_specific:
+            for item in model_specific[model_type]:
+                self._suggest_single_param(trial, config, item)
 
-            update_nested_dict(config, name, val)
+    def _suggest_single_param(
+        self,
+        trial: optuna.Trial,
+        config: dict[str, Any],
+        item: dict[str, Any],
+    ) -> None:
+        """Suggest a single parameter and update the config."""
+        name = item["name"]
+        param_type = item["type"]
+
+        if param_type == "float":
+            val = trial.suggest_float(
+                name,
+                item["low"],
+                item["high"],
+                log=item.get("log", False),
+            )
+        elif param_type == "int":
+            val = trial.suggest_int(name, item["low"], item["high"], log=item.get("log", False))
+        elif param_type == "categorical":
+            val = trial.suggest_categorical(name, item["choices"])
+        else:
+            msg = f"Unknown parameter type: {param_type}"
+            raise ValueError(msg)
+
+        update_nested_dict(config, name, val)
 
     def objective(self, trial: optuna.Trial) -> float:
         """Optuna objective function."""
