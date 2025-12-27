@@ -193,6 +193,7 @@ class OptimizationPipeline:
             mlflow.log_metrics({"best_val_loss": trial.value})
             for key, value in trial.params.items():
                 mlflow.log_param(f"best_{key}", value)
+            mlflow.log_dict(self.opt_config, artifact_file="optimization_config.json")
             self._plot_param_importances(study)
 
 
