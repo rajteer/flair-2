@@ -26,4 +26,5 @@ def setup_logging(
     if not no_stdout_logs:
         log_stream_handler = logging.StreamHandler(sys.stdout)
         log_stream_handler.setLevel(logging.INFO)
+        log_stream_handler.setFormatter(log_formatter)
         root_logger.addHandler(log_stream_handler)
