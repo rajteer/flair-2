@@ -42,7 +42,7 @@ class OptimizationPipeline:
 
         self.study_name = self.opt_config["optimization"]["study_name"]
         self.n_trials = self.opt_config["optimization"]["n_trials"]
-        self.direction = self.opt_config["optimization"].get("direction", "minimize")
+        self.direction = self.opt_config["optimization"].get("direction", "maximize")
 
         # Override epochs if specified in optimization config
         if "n_epochs" in self.opt_config["optimization"]:
@@ -98,6 +98,7 @@ class OptimizationPipeline:
 
         run_name = f"optuna_trial_{trial.number}"
         config["mlflow"]["run_name"] = run_name
+        config["training"]["early_stopping_criterion"] = "miou"
 
         def pruning_callback(value: float, step: int) -> None:
             trial.report(value, step)
@@ -107,12 +108,12 @@ class OptimizationPipeline:
         try:
             pipeline = TrainEvalPipeline(run_name=run_name, logs_dir="logs_optuna")
             metrics = pipeline.run(config, no_stdout_logs=True, pruning_callback=pruning_callback)
-            return metrics["best_val_loss"]
+            return metrics["best_val_miou"]
         except optuna.TrialPruned:
             raise
         except Exception:
             logger.exception("Trial %d failed", trial.number)
-            return float("inf")
+            return 0.0
 
     def _plot_param_importances(
         self,
@@ -163,7 +164,7 @@ class OptimizationPipeline:
         """Run the optimization."""
         mlflow_kwargs = {
             "tracking_uri": self.base_config["mlflow"]["tracking_uri"],
-            "metric_name": "best_val_loss",
+            "metric_name": "best_val_miou",
         }
 
         mlc = MLflowCallback(
@@ -190,7 +191,7 @@ class OptimizationPipeline:
         mlflow.set_tracking_uri(mlflow_kwargs["tracking_uri"])
         with mlflow.start_run(run_name=f"{self.study_name}_summary"):
             mlflow.log_params({"study_name": self.study_name, "n_trials": self.n_trials})
-            mlflow.log_metrics({"best_val_loss": trial.value})
+            mlflow.log_metrics({"best_val_miou": trial.value})
             for key, value in trial.params.items():
                 mlflow.log_param(f"best_{key}", value)
             mlflow.log_dict(self.opt_config, artifact_file="optimization_config.json")

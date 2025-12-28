@@ -9,6 +9,7 @@ import mlflow
 import torch
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torchinfo import summary
+from torchmetrics.classification import MulticlassJaccardIndex
 
 from src.data.pre_processing.chessmix import ChessMix
 from src.data.pre_processing.data_augmentation import FlairAugmentation
@@ -221,13 +222,20 @@ def _validate_epoch_temporal(
     loader: torch.utils.data.DataLoader,
     criterion: torch.nn.Module,
     device: torch.device,
-) -> float:
-    """Validate a temporal model for a single epoch and return average loss.
+    num_classes: int,
+    ignore_index: int | None = None,
+) -> tuple[float, float]:
+    """Validate a temporal model for a single epoch and return average loss and mIoU.
 
     Temporal models receive batch_positions and pad_mask arguments.
     """
     model.eval()
     val_loss = 0.0
+
+    miou_metric = MulticlassJaccardIndex(
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+    ).to(device)
 
     forward_sig = inspect.signature(model.forward)
     supports_pad_mask = "pad_mask" in forward_sig.parameters
@@ -245,7 +253,11 @@ def _validate_epoch_temporal(
                 outputs = model(x, batch_positions=batch_positions)
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
-    return val_loss / len(loader)
+
+            preds = outputs.argmax(dim=1)
+            miou_metric.update(preds, y)
+
+    return val_loss / len(loader), miou_metric.compute().item()
 
 
 def _validate_epoch_standard(
@@ -253,10 +265,18 @@ def _validate_epoch_standard(
     loader: torch.utils.data.DataLoader,
     criterion: torch.nn.Module,
     device: torch.device,
-) -> float:
-    """Validate a standard (non-temporal) model for a single epoch and return average loss."""
+    num_classes: int,
+    ignore_index: int | None = None,
+) -> tuple[float, float]:
+    """Validate a standard (non-temporal) model for a single epoch and return average loss and mIoU."""
     model.eval()
     val_loss = 0.0
+
+    miou_metric = MulticlassJaccardIndex(
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+    ).to(device)
+
     with torch.no_grad():
         for batch_data in loader:
             x = batch_data[BATCH_INDEX_INPUTS].to(device)
@@ -265,7 +285,11 @@ def _validate_epoch_standard(
             outputs = model(x)
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
-    return val_loss / len(loader)
+
+            preds = outputs.argmax(dim=1)
+            miou_metric.update(preds, y)
+
+    return val_loss / len(loader), miou_metric.compute().item()
 
 
 def train(
@@ -279,7 +303,9 @@ def train(
     epochs: int = 100,
     patience: int = 20,
     num_classes: int = 13,
+    other_class_index: int | None = None,
     accumulation_steps: int = 1,
+    early_stopping_criterion: str = "loss",
     *,
     use_amp: bool = False,
     apply_augmentations: bool = True,
@@ -316,11 +342,14 @@ def train(
         log_model: Whether to log the best model to MLflow. Defaults to True.
 
     Returns:
-        dict: History of training and validation losses, and best validation loss.
+        dict: History of training and validation losses/mIoUs, and best values.
             The best model is logged as an MLflow artifact 'best_model' if
             log_to_mlflow is True.
 
     """
+    if early_stopping_criterion not in ("loss", "miou"):
+        msg = f"early_stopping_criterion must be 'loss' or 'miou', got {early_stopping_criterion!r}"
+        raise ValueError(msg)
     model.to(device)
 
     sample_inputs, sample_batch_positions = _get_sample_batch(train_loader)
@@ -336,9 +365,11 @@ def train(
         )
 
     best_val_loss = float("inf")
+    best_val_miou = 0.0
     no_improve = 0
     losses_train: list[float] = []
     losses_val: list[float] = []
+    mious_val: list[float] = []
 
     augmenter = FlairAugmentation(data_config) if apply_augmentations and data_config else None
     chessmix = None
@@ -379,7 +410,7 @@ def train(
                 device,
                 accumulation_steps,
                 use_amp,
-                step_scheduler,  # Pass step-level scheduler
+                step_scheduler,
             )
         else:
             loss_epoch = train_epoch_fn(
@@ -397,23 +428,47 @@ def train(
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
 
-        val_loss = validate_epoch_fn(model, val_loader, criterion, device)
+        val_loss, val_miou = validate_epoch_fn(
+            model,
+            val_loader,
+            criterion,
+            device,
+            num_classes,
+            other_class_index,
+        )
         losses_val.append(val_loss)
-        logger.info("Epoch %d/%d: Validation Loss: %.4f", epoch + 1, epochs, val_loss)
+        mious_val.append(val_miou)
+        logger.info(
+            "Epoch %d/%d: Validation Loss: %.4f, Validation mIoU: %.4f",
+            epoch + 1,
+            epochs,
+            val_loss,
+            val_miou,
+        )
 
         if log_evaluation_metrics:
             log_metrics_to_mlflow(
-                metrics={"train_loss": loss_epoch, "val_loss": val_loss},
+                metrics={"train_loss": loss_epoch, "val_loss": val_loss, "val_miou": val_miou},
                 step=epoch,
             )
 
         if pruning_callback is not None:
-            pruning_callback(val_loss, epoch)
+            report_value = val_miou if early_stopping_criterion == "miou" else val_loss
+            pruning_callback(report_value, epoch)
 
-        if val_loss < best_val_loss:
+        if early_stopping_criterion == "miou":
+            improved = val_miou > best_val_miou
+        else:
+            improved = val_loss < best_val_loss
+
+        if improved:
+            best_val_miou = val_miou
             best_val_loss = val_loss
             no_improve = 0
-            logger.info("Validation loss decreased")
+            if early_stopping_criterion == "miou":
+                logger.info("Validation mIoU improved to %.4f", best_val_miou)
+            else:
+                logger.info("Validation loss improved to %.4f", best_val_loss)
             best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
         else:
             no_improve += 1
@@ -422,8 +477,6 @@ def train(
                 logger.info("Early stopping at epoch %d.", epoch + 1)
                 break
 
-        # Only call epoch-level scheduler.step() for ReduceLROnPlateau
-        # Step-based schedulers (OneCycleLR, etc.) are updated in the training loop
         if scheduler is not None and isinstance(scheduler, ReduceLROnPlateau):
             scheduler.step(val_loss)
 
@@ -445,5 +498,7 @@ def train(
     return {
         "train_loss": losses_train,
         "val_loss": losses_val,
+        "val_miou": mious_val,
         "best_val_loss": best_val_loss,
+        "best_val_miou": best_val_miou,
     }
