@@ -3,17 +3,42 @@ import sys
 from pathlib import Path
 
 
-class FlushingFileHandler(logging.FileHandler):
-    """A FileHandler that flushes after every log record.
+class ResilientFileHandler(logging.FileHandler):
+    """A FileHandler that handles NFS stale file handle errors.
 
-    This is crucial for HPC environments where processes may be killed
-    unexpectedly, ensuring no log messages are lost in the buffer.
+    This handler flushes after every log record and automatically recovers
+    from OSError 116 (Stale file handle) by reopening the file.
+    This is crucial for HPC environments with NFS filesystems.
     """
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Emit a record and immediately flush the stream."""
-        super().emit(record)
-        self.flush()
+        """Emit a record, handling stale file handle errors."""
+        try:
+            super().emit(record)
+            self.flush()
+        except OSError as e:
+            if e.errno == 116:  # Stale file handle
+                self._reopen_stream()
+                try:
+                    super().emit(record)
+                    self.flush()
+                except OSError:
+                    pass  # Give up silently to avoid crashing the program
+            else:
+                raise
+
+    def _reopen_stream(self) -> None:
+        """Close and reopen the stream to recover from stale handle."""
+        try:
+            if self.stream:
+                self.stream.close()
+        except OSError:
+            pass
+        self.stream = self._open()
+
+
+# Keep alias for backwards compatibility
+FlushingFileHandler = ResilientFileHandler
 
 
 LOG_FORMATTER = logging.Formatter(
