@@ -36,6 +36,7 @@ class OptimizationPipeline:
         base_config_path: Path,
         opt_config_path: Path,
         timeout_seconds: int | None = None,
+        storage_path: str | None = None,
     ) -> None:
         """Initialize the optimization pipeline.
 
@@ -43,6 +44,8 @@ class OptimizationPipeline:
             base_config_path: Path to the base training configuration.
             opt_config_path: Path to the optimization configuration.
             timeout_seconds: Timeout in seconds. Overrides config value if provided.
+            storage_path: Path to SQLite database for study persistence.
+                If provided, the study will be saved to disk and can be resumed.
 
         """
         self.base_config = read_yaml(base_config_path)
@@ -52,6 +55,7 @@ class OptimizationPipeline:
         self.n_trials = self.opt_config["optimization"]["n_trials"]
         self.direction = self.opt_config["optimization"].get("direction", "maximize")
         self.timeout = timeout_seconds or self.opt_config["optimization"].get("timeout_seconds")
+        self.storage = f"sqlite:///{storage_path}" if storage_path else None
 
         # Override epochs if specified in optimization config
         if "n_epochs" in self.opt_config["optimization"]:
@@ -62,11 +66,9 @@ class OptimizationPipeline:
         search_space = self.opt_config["optimization"]["search_space"]
         model_specific = self.opt_config["optimization"].get("model_specific_search_space", {})
 
-        # Suggest base (shared) parameters
         for item in search_space:
             self._suggest_single_param(trial, config, item)
 
-        # Suggest model-specific parameters if defined
         model_type = config.get("model", {}).get("model_type", "").lower()
         if model_type in model_specific:
             for item in model_specific[model_type]:
@@ -184,9 +186,14 @@ class OptimizationPipeline:
 
         study = optuna.create_study(
             study_name=self.study_name,
+            storage=self.storage,
+            load_if_exists=True,
             direction=self.direction,
             pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5),
         )
+
+        if self.storage:
+            logger.info("Loaded/created study with %d existing trials", len(study.trials))
 
         study.optimize(
             self.objective,
@@ -241,6 +248,13 @@ def main() -> None:
         default=172740,  # 47h 59min
         help="Timeout in seconds for the entire optimization (default: 172740 = 47h 59min).",
     )
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="Path to SQLite database for study persistence (enables resume). "
+        "Example: optuna_study.db",
+    )
 
     args = parser.parse_args()
 
@@ -261,14 +275,16 @@ def main() -> None:
         base_config_path=Path(args.config),
         opt_config_path=Path(args.opt_config),
         timeout_seconds=args.timeout,
+        storage_path=args.db,
     )
 
     logger.info("OptimizationPipeline initialized successfully")
     logger.info(
-        "Study name: %s, Trials: %d, Timeout: %s",
+        "Study name: %s, Trials: %d, Timeout: %s, Storage: %s",
         optimization.study_name,
         optimization.n_trials,
         f"{optimization.timeout}s" if optimization.timeout else "None",
+        optimization.storage or "in-memory",
     )
 
     optimization.run()
