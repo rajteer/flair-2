@@ -35,14 +35,23 @@ class OptimizationPipeline:
         self,
         base_config_path: Path,
         opt_config_path: Path,
+        timeout_seconds: int | None = None,
     ) -> None:
-        """Initialize the optimization pipeline."""
+        """Initialize the optimization pipeline.
+
+        Args:
+            base_config_path: Path to the base training configuration.
+            opt_config_path: Path to the optimization configuration.
+            timeout_seconds: Timeout in seconds. Overrides config value if provided.
+
+        """
         self.base_config = read_yaml(base_config_path)
         self.opt_config = read_yaml(opt_config_path)
 
         self.study_name = self.opt_config["optimization"]["study_name"]
         self.n_trials = self.opt_config["optimization"]["n_trials"]
         self.direction = self.opt_config["optimization"].get("direction", "maximize")
+        self.timeout = timeout_seconds or self.opt_config["optimization"].get("timeout_seconds")
 
         # Override epochs if specified in optimization config
         if "n_epochs" in self.opt_config["optimization"]:
@@ -179,7 +188,12 @@ class OptimizationPipeline:
             pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5),
         )
 
-        study.optimize(self.objective, n_trials=self.n_trials, callbacks=[mlc])
+        study.optimize(
+            self.objective,
+            n_trials=self.n_trials,
+            timeout=self.timeout,
+            callbacks=[mlc],
+        )
 
         logger.info("Best trial:")
         trial = study.best_trial
@@ -221,6 +235,12 @@ def main() -> None:
         default="optimization.log",
         help="Path to log file.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=172740,  # 47h 59min
+        help="Timeout in seconds for the entire optimization (default: 172740 = 47h 59min).",
+    )
 
     args = parser.parse_args()
 
@@ -240,10 +260,16 @@ def main() -> None:
     optimization = OptimizationPipeline(
         base_config_path=Path(args.config),
         opt_config_path=Path(args.opt_config),
+        timeout_seconds=args.timeout,
     )
 
     logger.info("OptimizationPipeline initialized successfully")
-    logger.info("Study name: %s, Trials: %d", optimization.study_name, optimization.n_trials)
+    logger.info(
+        "Study name: %s, Trials: %d, Timeout: %s",
+        optimization.study_name,
+        optimization.n_trials,
+        f"{optimization.timeout}s" if optimization.timeout else "None",
+    )
 
     optimization.run()
 
