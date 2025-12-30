@@ -311,6 +311,7 @@ class TrainEvalPipeline:
                 accumulation_steps=config["training"].get("accumulation_steps", 1),
                 early_stopping_criterion=config["training"].get("early_stopping_criterion", "loss"),
                 use_amp=config["training"].get("use_amp", False),
+                log_model=config["training"].get("log_model", True),
                 pruning_callback=pruning_callback,
             )
 
