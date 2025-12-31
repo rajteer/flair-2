@@ -18,12 +18,14 @@ from src.utils.model_stats import compute_model_complexity
 
 logger = logging.getLogger(__name__)
 
-_TORCH_VERSION = tuple(int(x) for x in torch.__version__.split(".")[:2])
-if _TORCH_VERSION >= (2, 0):
+from packaging import version as pkg_version
+
+_TORCH_VERSION = pkg_version.parse(torch.__version__)
+if _TORCH_VERSION >= pkg_version.parse("2.0"):
     GradScaler = torch.amp.GradScaler
     autocast = torch.amp.autocast
 else:
-    from torch.cuda.amp import GradScaler, autocast  # noqa: F401
+    from torch.cuda.amp import GradScaler, autocast
 
 TEMPORAL_MODEL_NDIM = 5
 
