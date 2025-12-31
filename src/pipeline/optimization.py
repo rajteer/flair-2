@@ -65,6 +65,7 @@ class OptimizationPipeline:
         """Suggest parameters based on configuration and update the config dict."""
         search_space = self.opt_config["optimization"]["search_space"]
         model_specific = self.opt_config["optimization"].get("model_specific_search_space", {})
+        model_specific = {k.lower(): v for k, v in model_specific.items()}
 
         for item in search_space:
             self._suggest_single_param(trial, config, item)

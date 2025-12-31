@@ -42,7 +42,9 @@ class SoftPool2d(nn.Module):
         self.avgpool = nn.AvgPool2d(kernel_size, stride)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_exp = torch.exp(x)
+        # Numerically stable soft pooling: subtract max before exp (like softmax)
+        x_max = torch.amax(x, dim=(2, 3), keepdim=True)
+        x_exp = torch.exp(x - x_max)
         x_exp_pool = self.avgpool(x_exp)
         x_weighted = self.avgpool(x_exp * x)
         return x_weighted / x_exp_pool
@@ -79,8 +81,9 @@ class ChannelAttention(nn.Module):
                 max_pool = functional.adaptive_max_pool2d(x, (1, 1))
                 channel_att_raw = self.mlp(max_pool)
             elif pool_type == "soft":
-                # Soft pooling: use weighted exponential average
-                x_exp = torch.exp(x)
+                # Numerically stable soft pooling: subtract max before exp (like softmax)
+                x_max = torch.amax(x, dim=(2, 3), keepdim=True)
+                x_exp = torch.exp(x - x_max)
                 x_exp_pool = functional.adaptive_avg_pool2d(x_exp, (1, 1))
                 x_weighted = functional.adaptive_avg_pool2d(x_exp * x, (1, 1))
                 soft_pool_out = x_weighted / x_exp_pool
