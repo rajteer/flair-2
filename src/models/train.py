@@ -18,6 +18,13 @@ from src.utils.model_stats import compute_model_complexity
 
 logger = logging.getLogger(__name__)
 
+_TORCH_VERSION = tuple(int(x) for x in torch.__version__.split(".")[:2])
+if _TORCH_VERSION >= (2, 0):
+    GradScaler = torch.amp.GradScaler
+    autocast = torch.amp.autocast
+else:
+    from torch.cuda.amp import GradScaler, autocast  # noqa: F401
+
 TEMPORAL_MODEL_NDIM = 5
 
 BATCH_INDEX_INPUTS = 0
@@ -116,9 +123,11 @@ def _train_epoch_temporal(
     model.train()
     optimizer.zero_grad()
 
-    device_type = "cuda" if device.type == "cuda" else "cpu"
     scaler_enabled = use_amp and device.type == "cuda"
-    scaler = torch.amp.GradScaler(device=device_type, enabled=scaler_enabled)
+    if _TORCH_VERSION >= (2, 0):
+        scaler = GradScaler(device=device.type, enabled=scaler_enabled)
+    else:
+        scaler = GradScaler(enabled=scaler_enabled)
     total_loss = 0.0
 
     forward_sig = inspect.signature(model.forward)
@@ -131,14 +140,19 @@ def _train_epoch_temporal(
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
         optimizer.zero_grad()
+        if _TORCH_VERSION >= (2, 0):
+            ctx = autocast(device_type=device.type, enabled=use_amp)
+        else:
+            ctx = autocast(enabled=use_amp)
+
         if supports_pad_mask:
-            with torch.amp.autocast(device_type=device_type, enabled=use_amp):
+            with ctx:
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
                 loss = criterion(outputs, y)
                 loss_value = loss.item()
                 loss = loss / accumulation_steps
         else:
-            with torch.amp.autocast(device_type=device_type, enabled=use_amp):
+            with ctx:
                 outputs = model(x, batch_positions=batch_positions)
                 loss = criterion(outputs, y)
                 loss_value = loss.item()
@@ -181,9 +195,11 @@ def _train_epoch_standard(
     model.train()
     optimizer.zero_grad()
 
-    device_type = "cuda" if device.type == "cuda" else "cpu"
     scaler_enabled = use_amp and device.type == "cuda"
-    scaler = torch.amp.GradScaler(device=device_type, enabled=scaler_enabled)
+    if _TORCH_VERSION >= (2, 0):
+        scaler = GradScaler(device=device.type, enabled=scaler_enabled)
+    else:
+        scaler = GradScaler(enabled=scaler_enabled)
     total_loss = 0.0
 
     for batch_idx, batch_data in enumerate(loader):
@@ -196,7 +212,12 @@ def _train_epoch_standard(
         if chessmix is not None:
             x, y = chessmix(x, y)
 
-        with torch.amp.autocast(device_type=device_type, enabled=use_amp):
+        if _TORCH_VERSION >= (2, 0):
+            ctx = autocast(device_type=device.type, enabled=use_amp)
+        else:
+            ctx = autocast(enabled=use_amp)
+
+        with ctx:
             outputs = model(x)
             loss = criterion(outputs, y)
             loss_value = loss.item()
@@ -423,7 +444,7 @@ def train(
                 chessmix,
                 accumulation_steps,
                 use_amp,
-                step_scheduler,  # Pass step-level scheduler
+                step_scheduler,
             )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
