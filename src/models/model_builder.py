@@ -184,7 +184,6 @@ def build_model(
 
     smp_config = model_config or {}
     for key, value in smp_config.items():
-        # Skip stochastic_depth - we already handle it via drop_path_rate above
         if key == "stochastic_depth":
             continue
         if key not in kwargs:

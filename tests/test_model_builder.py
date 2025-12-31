@@ -145,7 +145,9 @@ class TestBuildModel:
         assert isinstance(model, nn.Module)
 
     def test_model_config_does_not_override_explicit_params(
-        self, in_channels: int, num_classes: int
+        self,
+        in_channels: int,
+        num_classes: int,
     ) -> None:
         """Explicit parameters should not be overridden by model_config."""
         model = build_model(
