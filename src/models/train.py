@@ -18,14 +18,14 @@ from src.utils.model_stats import compute_model_complexity
 
 logger = logging.getLogger(__name__)
 
-from packaging import version as pkg_version
-
-_TORCH_VERSION = pkg_version.parse(torch.__version__)
-if _TORCH_VERSION >= pkg_version.parse("2.0"):
+try:
     GradScaler = torch.amp.GradScaler
     autocast = torch.amp.autocast
-else:
+    _USE_NEW_AMP_API = True
+except (AttributeError, ImportError):
     from torch.cuda.amp import GradScaler, autocast
+
+    _USE_NEW_AMP_API = False
 
 TEMPORAL_MODEL_NDIM = 5
 
@@ -126,7 +126,7 @@ def _train_epoch_temporal(
     optimizer.zero_grad()
 
     scaler_enabled = use_amp and device.type == "cuda"
-    if _TORCH_VERSION >= (2, 0):
+    if _USE_NEW_AMP_API:
         scaler = GradScaler(device=device.type, enabled=scaler_enabled)
     else:
         scaler = GradScaler(enabled=scaler_enabled)
@@ -142,7 +142,7 @@ def _train_epoch_temporal(
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
         optimizer.zero_grad()
-        if _TORCH_VERSION >= (2, 0):
+        if _USE_NEW_AMP_API:
             ctx = autocast(device_type=device.type, enabled=use_amp)
         else:
             ctx = autocast(enabled=use_amp)
@@ -198,7 +198,7 @@ def _train_epoch_standard(
     optimizer.zero_grad()
 
     scaler_enabled = use_amp and device.type == "cuda"
-    if _TORCH_VERSION >= (2, 0):
+    if _USE_NEW_AMP_API:
         scaler = GradScaler(device=device.type, enabled=scaler_enabled)
     else:
         scaler = GradScaler(enabled=scaler_enabled)
@@ -214,7 +214,7 @@ def _train_epoch_standard(
         if chessmix is not None:
             x, y = chessmix(x, y)
 
-        if _TORCH_VERSION >= (2, 0):
+        if _USE_NEW_AMP_API:
             ctx = autocast(device_type=device.type, enabled=use_amp)
         else:
             ctx = autocast(enabled=use_amp)
