@@ -133,11 +133,18 @@ class UNetFormer(nn.Module):
     ) -> None:
         super().__init__()
 
+        # Select out_indices based on encoder architecture
+        # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
+        backbone_lower = backbone_name.lower()
+        if "convnext" in backbone_lower or "swin" in backbone_lower:
+            out_indices = (0, 1, 2, 3)
+        else:
+            out_indices = (1, 2, 3, 4)
+
         self.backbone = timm.create_model(
             backbone_name,
             features_only=True,
-            output_stride=32,
-            out_indices=(1, 2, 3, 4),
+            out_indices=out_indices,
             pretrained=pretrained,
             in_chans=in_channels,
         )
