@@ -12,6 +12,7 @@ Usage:
 import argparse
 import json
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -21,26 +22,51 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def compute_sentinel_statistics(
+def process_single_file(args: tuple) -> tuple[np.ndarray, np.ndarray, int] | None:
+    """Process a single file and return channel sums, squared sums, and pixel count.
+
+    Args:
+        args: Tuple of (file_path, scale_factor)
+
+    Returns:
+        Tuple of (channel_sums, channel_sq_sums, pixel_count) or None if failed.
+
+    """
+    file_path, scale_factor = args
+    try:
+        data = np.load(file_path).astype(np.float64) / scale_factor
+        n_channels = data.shape[1]
+
+        # Compute sums for each channel using efficient numpy operations
+        # data shape: (T, C, H, W)
+        # Sum over T, H, W dimensions for each channel
+        channel_sums = data.sum(axis=(0, 2, 3))  # Shape: (C,)
+        channel_sq_sums = (data**2).sum(axis=(0, 2, 3))  # Shape: (C,)
+        pixel_count = data.shape[0] * data.shape[2] * data.shape[3]  # T * H * W
+
+        return channel_sums, channel_sq_sums, pixel_count
+    except Exception:
+        return None
+
+
+def compute_sentinel_statistics_parallel(
     sentinel_dir: Path,
     sample_ratio: float = 1.0,
     scale_factor: float = 10000.0,
+    num_workers: int = 8,
 ) -> dict[str, list[float]]:
-    """Compute channel-wise mean and std for Sentinel-2 data.
-
-    Uses Welford's online algorithm for numerically stable computation.
+    """Compute channel-wise mean and std using parallel processing.
 
     Args:
         sentinel_dir: Directory containing Sentinel-2 superpatch .npy files
-        sample_ratio: Fraction of patches to sample (0-1). Use <1 for faster computation.
+        sample_ratio: Fraction of patches to sample (0-1).
         scale_factor: Factor to divide raw values by before computing stats.
-            Default 10000.0 normalizes reflectance to [0, 1] range.
+        num_workers: Number of parallel workers.
 
     Returns:
         Dict with 'mean' and 'std' keys, each containing list of per-channel values.
 
     """
-    # Find all sentinel data files
     data_files = list(sentinel_dir.rglob("*_data.npy"))
     logger.info("Found %d Sentinel-2 data files", len(data_files))
 
@@ -48,59 +74,57 @@ def compute_sentinel_statistics(
         msg = f"No *_data.npy files found in {sentinel_dir}"
         raise ValueError(msg)
 
-    # Sample files if requested
     if sample_ratio < 1.0:
         n_samples = max(1, int(len(data_files) * sample_ratio))
         rng = np.random.default_rng(42)
         data_files = list(rng.choice(data_files, size=n_samples, replace=False))
         logger.info("Sampled %d files for statistics computation", len(data_files))
 
-    n_channels = None
-    count = 0
-    mean = None
-    m2 = None
+    args_list = [(f, scale_factor) for f in data_files]
 
-    for data_file in tqdm(data_files, desc="Computing statistics"):
-        try:
-            data = np.load(data_file, mmap_mode="r")
+    n_channels = None
+    channel_sums = None
+    channel_sq_sums = None
+    total_pixels = 0
+
+    logger.info("Processing files with %d workers...", num_workers)
+
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        futures = {executor.submit(process_single_file, args): args[0] for args in args_list}
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing"):
+            result = future.result()
+            if result is None:
+                continue
+
+            sums, sq_sums, count = result
 
             if n_channels is None:
-                n_channels = data.shape[1]
-                mean = np.zeros(n_channels, dtype=np.float64)
-                m2 = np.zeros(n_channels, dtype=np.float64)
-                logger.info("Detected %d channels", n_channels)
+                n_channels = len(sums)
+                channel_sums = np.zeros(n_channels, dtype=np.float64)
+                channel_sq_sums = np.zeros(n_channels, dtype=np.float64)
 
-            data = data.astype(np.float64) / scale_factor
+            channel_sums += sums
+            channel_sq_sums += sq_sums
+            total_pixels += count
 
-            for c in range(n_channels):
-                channel_data = data[:, c, :, :].flatten()
-
-                for x in channel_data:
-                    count += 1
-                    delta = x - mean[c]
-                    mean[c] += delta / count
-                    delta2 = x - mean[c]
-                    m2[c] += delta * delta2
-
-        except Exception as e:
-            logger.warning("Failed to process %s: %s", data_file, e)
-            continue
-
-    if count == 0:
+    if total_pixels == 0:
         msg = "No valid data samples found"
         raise ValueError(msg)
 
-    variance = m2 / count
-    std = np.sqrt(variance)
+    # Compute final statistics
+    mean = channel_sums / total_pixels
+    variance = (channel_sq_sums / total_pixels) - (mean**2)
+    std = np.sqrt(np.maximum(variance, 0))
 
-    logger.info("Computed statistics from %d total pixels", count)
+    logger.info("Computed statistics from %d total pixels per channel", total_pixels)
     logger.info("Per-channel means: %s", mean.tolist())
     logger.info("Per-channel stds: %s", std.tolist())
 
     return {
         "mean": mean.tolist(),
         "std": std.tolist(),
-        "count": count,
+        "count": total_pixels,
         "n_files": len(data_files),
         "scale_factor": scale_factor,
     }
@@ -111,9 +135,7 @@ def compute_sentinel_statistics_batch(
     sample_ratio: float = 1.0,
     scale_factor: float = 10000.0,
 ) -> dict[str, list[float]]:
-    """Compute channel-wise mean and std using batch processing (faster but uses more memory).
-
-    This version processes entire superpatch files at once instead of pixel-by-pixel.
+    """Compute channel-wise mean and std using batch processing (single-threaded).
 
     Args:
         sentinel_dir: Directory containing Sentinel-2 superpatch .npy files
@@ -137,13 +159,12 @@ def compute_sentinel_statistics_batch(
         data_files = list(rng.choice(data_files, size=n_samples, replace=False))
         logger.info("Sampled %d files for statistics computation", len(data_files))
 
-    # Collect sums and counts per channel
     n_channels = None
     channel_sums = None
     channel_sq_sums = None
-    total_count = 0
+    total_pixels = 0
 
-    for data_file in tqdm(data_files, desc="Computing statistics (batch mode)"):
+    for data_file in tqdm(data_files, desc="Computing statistics"):
         try:
             data = np.load(data_file).astype(np.float64) / scale_factor
 
@@ -151,37 +172,32 @@ def compute_sentinel_statistics_batch(
                 n_channels = data.shape[1]
                 channel_sums = np.zeros(n_channels, dtype=np.float64)
                 channel_sq_sums = np.zeros(n_channels, dtype=np.float64)
-                logger.info("Detected %d channels", n_channels)
 
-            # Sum over all dimensions except channel
-            for c in range(n_channels):
-                channel_data = data[:, c, :, :]
-                channel_sums[c] += channel_data.sum()
-                channel_sq_sums[c] += (channel_data**2).sum()
-                total_count += channel_data.size // n_channels
+            # Efficient vectorized sum over T, H, W
+            channel_sums += data.sum(axis=(0, 2, 3))
+            channel_sq_sums += (data**2).sum(axis=(0, 2, 3))
+            total_pixels += data.shape[0] * data.shape[2] * data.shape[3]
 
         except Exception as e:
             logger.warning("Failed to process %s: %s", data_file, e)
             continue
 
-    if total_count == 0:
+    if total_pixels == 0:
         msg = "No valid data samples found"
         raise ValueError(msg)
 
-    count_per_channel = total_count
-
-    mean = channel_sums / count_per_channel
-    variance = (channel_sq_sums / count_per_channel) - (mean**2)
+    mean = channel_sums / total_pixels
+    variance = (channel_sq_sums / total_pixels) - (mean**2)
     std = np.sqrt(np.maximum(variance, 0))
 
-    logger.info("Computed statistics from %d pixels per channel", count_per_channel)
+    logger.info("Computed statistics from %d pixels per channel", total_pixels)
     logger.info("Per-channel means: %s", mean.tolist())
     logger.info("Per-channel stds: %s", std.tolist())
 
     return {
         "mean": mean.tolist(),
         "std": std.tolist(),
-        "count": count_per_channel,
+        "count": total_pixels,
         "n_files": len(data_files),
         "scale_factor": scale_factor,
     }
@@ -217,24 +233,31 @@ def main() -> None:
         help="Factor to divide raw reflectance values by (default: 10000)",
     )
     parser.add_argument(
-        "--batch",
+        "--workers",
+        type=int,
+        default=8,
+        help="Number of parallel workers (default: 8)",
+    )
+    parser.add_argument(
+        "--no-parallel",
         action="store_true",
-        help="Use batch processing (faster but uses more memory)",
+        help="Disable parallel processing (use single-threaded batch mode)",
     )
 
     args = parser.parse_args()
 
-    if args.batch:
+    if args.no_parallel:
         stats = compute_sentinel_statistics_batch(
             args.sentinel_dir,
             sample_ratio=args.sample_ratio,
             scale_factor=args.scale_factor,
         )
     else:
-        stats = compute_sentinel_statistics(
+        stats = compute_sentinel_statistics_parallel(
             args.sentinel_dir,
             sample_ratio=args.sample_ratio,
             scale_factor=args.scale_factor,
+            num_workers=args.workers,
         )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
