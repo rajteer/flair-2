@@ -336,7 +336,7 @@ def _evaluate_batches_temporal(
 
             target_size = (targets.shape[-2], targets.shape[-1])
             upsampled_preds = upsample_predictions(
-                processed_outputs, target_size, output_size=output_size
+                processed_outputs, target_size, output_size=output_size,
             )
 
             for metric in evaluation_metrics_dict.values():
