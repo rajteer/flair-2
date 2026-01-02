@@ -59,6 +59,10 @@ def build_model(
     if model_type.upper() == "UTAE":
         utae_config = model_config or {}
 
+        n_head = utae_config.get("n_head", 16)
+        d_model = utae_config.get("d_model", 256)
+        d_k = utae_config.get("d_k", d_model // n_head)
+
         utae_params = {
             "input_dim": in_channels,
             "encoder_widths": utae_config.get("encoder_widths", [64, 64, 64, 128]),
@@ -69,9 +73,9 @@ def build_model(
             "str_conv_p": utae_config.get("str_conv_p", 1),
             "agg_mode": utae_config.get("agg_mode", "att_group"),
             "encoder_norm": utae_config.get("encoder_norm", "group"),
-            "n_head": utae_config.get("n_head", 16),
-            "d_model": utae_config.get("d_model", 256),
-            "d_k": utae_config.get("d_k", 4),
+            "n_head": n_head,
+            "d_model": d_model,
+            "d_k": d_k,
             "encoder": utae_config.get("encoder", False),
             "return_maps": utae_config.get("return_maps", False),
             "pad_value": utae_config.get("pad_value", 0),

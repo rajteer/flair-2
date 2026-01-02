@@ -13,6 +13,7 @@ from optuna.integration.mlflow import MLflowCallback
 from optuna.visualization import plot_param_importances
 
 from src.pipeline.pipeline import TrainEvalPipeline
+from src.pipeline.sentinel_pipeline import SentinelTrainEvalPipeline
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
 from src.utils.read_yaml import read_yaml
 
@@ -26,6 +27,38 @@ def update_nested_dict(d: dict[str, Any], key_path: str, value: Any) -> None:
     for key in keys[:-1]:
         current = current.setdefault(key, {})
     current[keys[-1]] = value
+
+
+def _sync_tsvit_image_size(config: dict[str, Any]) -> None:
+    """Synchronize TSViT image_size with context_size.
+
+    When Optuna varies context_size, TSViT's image_size must match to avoid
+    shape mismatches in positional embeddings.
+
+    Args:
+        config: The configuration dictionary to update in-place.
+
+    Raises:
+        optuna.TrialPruned: If context_size is not divisible by patch_size.
+
+    """
+    ctx_size = config.get("data", {}).get("context_size")
+    model_type = config.get("model", {}).get("model_type", "").upper()
+
+    if model_type == "TSVIT" and ctx_size is not None:
+        model_config = config["model"].setdefault("model_config", {})
+        model_config["image_size"] = ctx_size
+
+        # Validate patch_size divisibility
+        patch_size = model_config.get("patch_size", 4)
+        if ctx_size % patch_size != 0:
+            msg = f"context_size {ctx_size} not divisible by patch_size {patch_size}"
+            logger.warning(
+                "Invalid combination: context_size=%d not divisible by patch_size=%d",
+                ctx_size,
+                patch_size,
+            )
+            raise optuna.TrialPruned(msg)
 
 
 class OptimizationPipeline:
@@ -108,6 +141,8 @@ class OptimizationPipeline:
 
         self._suggest_params(trial, config)
 
+        _sync_tsvit_image_size(config)
+
         run_name = f"optuna_trial_{trial.number}"
         config["mlflow"]["run_name"] = run_name
         config["training"]["early_stopping_criterion"] = "miou"
@@ -118,7 +153,14 @@ class OptimizationPipeline:
                 raise optuna.TrialPruned
 
         try:
-            pipeline = TrainEvalPipeline(run_name=run_name, logs_dir="logs_optuna")
+            # Auto-detect sentinel vs aerial pipeline based on config
+            is_sentinel = "sentinel" in config.get("data", {}).get("train", {})
+
+            if is_sentinel:
+                pipeline = SentinelTrainEvalPipeline(run_name=run_name, logs_dir="logs_optuna")
+            else:
+                pipeline = TrainEvalPipeline(run_name=run_name, logs_dir="logs_optuna")
+
             metrics = pipeline.run(config, no_stdout_logs=True, pruning_callback=pruning_callback)
             return metrics["best_val_miou"]
         except optuna.TrialPruned:

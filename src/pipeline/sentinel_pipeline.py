@@ -239,7 +239,7 @@ class SentinelTrainEvalPipeline:
                 encoder_weights=config["model"].get("encoder_weights"),
                 in_channels=config["model"]["in_channels"],
                 n_classes=config["data"]["num_classes"],
-                model_config=config["model"],
+                model_config=config["model"].get("model_config"),
             )
 
             model.to(device)
