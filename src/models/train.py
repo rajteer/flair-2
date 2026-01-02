@@ -93,53 +93,56 @@ def _log_model_description(
     sample_inputs: torch.Tensor | None = None,
     batch_positions: torch.Tensor | None = None,
 ) -> None:
-    """Create and log model stats."""
-    model_info = ""
+    """Create and log model stats. Failures are logged but don't raise."""
+    try:
+        model_info = ""
 
-    summary_kwargs: dict[str, Any] = {
-        "model": model,
-        "device": str(device),
-        "verbose": 0,
-        "col_names": [
-            "input_size",
-            "output_size",
-            "num_params",
-            "kernel_size",
-            "mult_adds",
-        ],
-        "row_settings": ["var_names"],
-    }
+        summary_kwargs: dict[str, Any] = {
+            "model": model,
+            "device": str(device),
+            "verbose": 0,
+            "col_names": [
+                "input_size",
+                "output_size",
+                "num_params",
+                "kernel_size",
+                "mult_adds",
+            ],
+            "row_settings": ["var_names"],
+        }
 
-    if sample_inputs is not None:
-        summary_kwargs["input_data"] = sample_inputs
-        if sample_inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-            summary_kwargs["batch_positions"] = batch_positions
-    else:
-        summary_kwargs["input_size"] = sample_input_shape
+        if sample_inputs is not None:
+            summary_kwargs["input_data"] = sample_inputs
+            if sample_inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+                summary_kwargs["batch_positions"] = batch_positions
+        else:
+            summary_kwargs["input_size"] = sample_input_shape
 
-    with io.StringIO() as buf:
-        model_summary = summary(**summary_kwargs)
-        print(model_summary, file=buf)
-        model_info = buf.getvalue()
+        with io.StringIO() as buf:
+            model_summary = summary(**summary_kwargs)
+            print(model_summary, file=buf)
+            model_info = buf.getvalue()
 
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        delete=False,
-        encoding="utf-8",
-    ) as tmp:
-        tmp.write(model_info)
-        tmp_path = tmp.name
-    mlflow.log_artifact(tmp_path, "model_architecture")
-    Path(tmp_path).unlink()
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".txt",
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp.write(model_info)
+            tmp_path = tmp.name
+        mlflow.log_artifact(tmp_path, "model_architecture")
+        Path(tmp_path).unlink()
 
-    complexity = compute_model_complexity(
-        model=model,
-        input_size=sample_input_shape,
-        batch_positions=batch_positions,
-    )
-    for k, v in complexity.items():
-        mlflow.log_metric(k, float(v))
+        complexity = compute_model_complexity(
+            model=model,
+            input_size=sample_input_shape,
+            batch_positions=batch_positions,
+        )
+        for k, v in complexity.items():
+            mlflow.log_metric(k, float(v))
+    except Exception:
+        logger.warning("Failed to log model description (non-fatal)", exc_info=True)
 
 
 def _get_sample_batch(
