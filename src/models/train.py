@@ -332,11 +332,12 @@ def _validate_epoch_temporal(
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
             else:
                 outputs = model(x, batch_positions=batch_positions)
+
+            # Prepare outputs for loss/mIoU (center-crop + upsample if using context window)
+            outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
+
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
-
-            # Prepare outputs for mIoU (center-crop + upsample if using context window)
-            outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
 
             preds = outputs.argmax(dim=1)
             miou_metric.update(preds, y)
