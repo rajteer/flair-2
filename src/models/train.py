@@ -111,6 +111,7 @@ def _train_epoch_temporal(
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
+    max_grad_norm: float | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
@@ -163,6 +164,9 @@ def _train_epoch_temporal(
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            if max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -186,6 +190,7 @@ def _train_epoch_standard(
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
+    max_grad_norm: float | None = None,
 ) -> float:
     """Train a standard (non-temporal) model for a single epoch and return average loss.
 
@@ -228,6 +233,9 @@ def _train_epoch_standard(
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            if max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -336,6 +344,7 @@ def train(
     log_evaluation_metrics: bool = True,
     log_model: bool = True,
     pruning_callback: Any | None = None,
+    max_grad_norm: float | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -434,6 +443,7 @@ def train(
                 accumulation_steps,
                 use_amp,
                 step_scheduler,
+                max_grad_norm,
             )
         else:
             loss_epoch = train_epoch_fn(
@@ -447,6 +457,7 @@ def train(
                 accumulation_steps,
                 use_amp,
                 step_scheduler,
+                max_grad_norm,
             )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
