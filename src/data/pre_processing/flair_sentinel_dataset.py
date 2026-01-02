@@ -47,6 +47,8 @@ class FlairSentinelDataset(Dataset):
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
         sentinel_scale_factor: float = 10000.0,
+        sentinel_mean: list[float] | None = None,
+        sentinel_std: list[float] | None = None,
     ) -> None:
         """Initialize the Sentinel-only FLAIR-2 dataset.
 
@@ -67,7 +69,11 @@ class FlairSentinelDataset(Dataset):
                 as cloudy/snowy. Default 50 (50%) as per FLAIR-2 paper.
             sentinel_scale_factor: Factor to divide Sentinel-2 reflectance values by.
                 Default 10000.0 scales reflectance (0-10000) to [0, 1].
-                Set to 1.0 to disable scaling.
+                Set to 1.0 to disable scaling (use with sentinel_mean/std).
+            sentinel_mean: Per-channel means for z-score normalization (after scale_factor).
+                If provided with sentinel_std, applies (x - mean) / std normalization.
+            sentinel_std: Per-channel stds for z-score normalization (after scale_factor).
+                If provided with sentinel_mean, applies (x - mean) / std normalization.
 
         """
         self.mask_dir = Path(mask_dir)
@@ -79,6 +85,13 @@ class FlairSentinelDataset(Dataset):
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
         self.sentinel_scale_factor = sentinel_scale_factor
+
+        if sentinel_mean is not None and sentinel_std is not None:
+            self.sentinel_mean = torch.tensor(sentinel_mean, dtype=torch.float32)
+            self.sentinel_std = torch.tensor(sentinel_std, dtype=torch.float32)
+        else:
+            self.sentinel_mean = None
+            self.sentinel_std = None
 
         self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
@@ -236,6 +249,12 @@ class FlairSentinelDataset(Dataset):
         sentinel_tensor = torch.from_numpy(sentinel_patch).float()
         if self.sentinel_scale_factor != 1.0:
             sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+
+        if self.sentinel_mean is not None and self.sentinel_std is not None:
+            mean = self.sentinel_mean[None, :, None, None]
+            std = self.sentinel_std[None, :, None, None]
+            sentinel_tensor = (sentinel_tensor - mean) / std
+
         return sentinel_tensor, month_positions
 
     def get_class_counts(self) -> torch.Tensor:
