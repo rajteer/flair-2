@@ -209,6 +209,7 @@ def _train_epoch_temporal(
         else:
             with ctx:
                 outputs = model(x, batch_positions=batch_positions)
+                outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
                 loss = criterion(outputs, y)
                 loss_value = loss.item()
                 loss = loss / accumulation_steps
