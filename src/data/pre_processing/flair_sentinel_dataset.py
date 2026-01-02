@@ -1,11 +1,13 @@
 """Sentinel-only dataset for FLAIR-2 land cover segmentation experiments."""
 
 import logging
+from datetime import date
 from pathlib import Path
 
 import numpy as np
 import tifffile
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -20,7 +22,7 @@ from .sentinel_utils import (
     load_centroids_mapping,
     load_sentinel_dates,
     load_sentinel_superpatch_paths,
-    parse_sentinel_day_of_year,
+    parse_sentinel_days_from_reference,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,7 @@ class FlairSentinelDataset(Dataset):
         sentinel_scale_factor: float = 10000.0,
         sentinel_mean: list[float] | None = None,
         sentinel_std: list[float] | None = None,
+        upsample_size: int | None = None,
     ) -> None:
         """Initialize the Sentinel-only FLAIR-2 dataset.
 
@@ -74,6 +77,11 @@ class FlairSentinelDataset(Dataset):
                 If provided with sentinel_std, applies (x - mean) / std normalization.
             sentinel_std: Per-channel stds for z-score normalization (after scale_factor).
                 If provided with sentinel_mean, applies (x - mean) / std normalization.
+            upsample_size: Target spatial size to upsample Sentinel patches to.
+                If provided (e.g., 512), bilinearly upsamples Sentinel patches from their
+                native resolution to this size to match aerial/mask resolution.
+                This follows the FLAIR-2 paper approach for satellite-only training.
+                If None, no upsampling is performed.
 
         """
         self.mask_dir = Path(mask_dir)
@@ -92,6 +100,8 @@ class FlairSentinelDataset(Dataset):
         else:
             self.sentinel_mean = None
             self.sentinel_std = None
+
+        self.upsample_size = upsample_size
 
         self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
@@ -191,10 +201,10 @@ class FlairSentinelDataset(Dataset):
                 num_timesteps = sentinel_patch.shape[0]
                 positions = torch.arange(num_timesteps) % 12
             else:
-                # Use day-of-year from product names
+                # Use days from reference date (FLAIR-2 style)
                 product_names = load_sentinel_dates(self.sentinel_dates_dict[domain_zone])
-                day_of_year = [parse_sentinel_day_of_year(name) for name in product_names]
-                positions = torch.tensor(day_of_year, dtype=torch.long)
+                days_from_ref = [parse_sentinel_days_from_reference(name) for name in product_names]
+                positions = torch.tensor(days_from_ref, dtype=torch.long)
             sentinel_tensor = torch.from_numpy(sentinel_patch).float()
             if self.sentinel_scale_factor != 1.0:
                 sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
@@ -232,19 +242,29 @@ class FlairSentinelDataset(Dataset):
             product_names = [product_names[i] for i in valid_timesteps]
             sentinel_patch, month_indices = compute_monthly_averages(
                 sentinel_patch,
-                masks_patch,
                 product_names,
-                self.cloud_snow_cover_threshold,
-                self.cloud_snow_prob_threshold,
             )
-            month_positions = torch.tensor(month_indices, dtype=torch.long)
+            # Convert month indices (0-11) to days from reference (FLAIR-2 style)
+            # FLAIR-2 uses May 15 (month 5) as reference, computes days to 15th of each month
+            ref_month = 5  # May
+            ref_day = 15
+            days_from_ref = []
+            for m in month_indices:
+                # m is 0-11 (Jan=0, Dec=11), convert to 1-12 for date calculation
+                actual_month = m + 1
+                # Days from ref_date (May 15) to mid-month (15th) of this month
+                # ref_date - target_date: positive if target is before ref, negative if after
+                ref = date(2021, ref_month, ref_day)
+                target = date(2021, actual_month, 15)
+                days_from_ref.append((ref - target).days)
+            month_positions = torch.tensor(days_from_ref, dtype=torch.long)
         else:
-            # Extract day-of-year positions for non-averaged sequences
+            # Use days from reference date (FLAIR-2 style) for non-averaged sequences
             product_names = load_sentinel_dates(self.sentinel_dates_dict[domain_zone])
             if len(valid_timesteps) > 0:
                 product_names = [product_names[i] for i in valid_timesteps]
-            day_of_year = [parse_sentinel_day_of_year(name) for name in product_names]
-            month_positions = torch.tensor(day_of_year, dtype=torch.long)
+            days_from_ref = [parse_sentinel_days_from_reference(name) for name in product_names]
+            month_positions = torch.tensor(days_from_ref, dtype=torch.long)
 
         sentinel_tensor = torch.from_numpy(sentinel_patch).float()
         if self.sentinel_scale_factor != 1.0:
@@ -254,6 +274,15 @@ class FlairSentinelDataset(Dataset):
             mean = self.sentinel_mean[None, :, None, None]
             std = self.sentinel_std[None, :, None, None]
             sentinel_tensor = (sentinel_tensor - mean) / std
+
+        if self.upsample_size is not None:
+            # sentinel_tensor shape: (T, C, H, W)
+            sentinel_tensor = F.interpolate(
+                sentinel_tensor,
+                size=(self.upsample_size, self.upsample_size),
+                mode="bilinear",
+                align_corners=False,
+            )
 
         return sentinel_tensor, month_positions
 

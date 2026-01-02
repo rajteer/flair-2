@@ -146,6 +146,12 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
             mlflow.set_tag("data_type", "sentinel_2_only")
 
+            output_size = (
+                None
+                if config["data"].get("upsample_size")
+                else config["data"]["sentinel_patch_size"]
+            )
+
             test_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["test"]["masks"],
                 sentinel_dir=config["data"]["test"]["sentinel"],
@@ -159,6 +165,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
+                upsample_size=config["data"].get("upsample_size"),
             )
 
             train_dataset = FlairSentinelDataset(
@@ -174,6 +181,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
+                upsample_size=config["data"].get("upsample_size"),
             )
 
             val_dataset = FlairSentinelDataset(
@@ -189,6 +197,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
+                upsample_size=config["data"].get("upsample_size"),
             )
 
             generator = create_generator(seed)
@@ -286,7 +295,7 @@ class SentinelTrainEvalPipeline:
                 num_classes=config["data"]["num_classes"],
                 other_class_index=config["data"].get("other_class_index"),
                 pruning_callback=pruning_callback,
-                output_size=config["data"]["sentinel_patch_size"],
+                output_size=output_size,
             )
 
             logger.info("Training finished. Evaluating the model...")
@@ -329,6 +338,7 @@ class SentinelTrainEvalPipeline:
                         sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                         sentinel_mean=config["data"].get("sentinel_mean"),
                         sentinel_std=config["data"].get("sentinel_std"),
+                        upsample_size=config["data"].get("upsample_size"),
                     )
                     zone_data_loader = DataLoader(
                         zone_dataset,
@@ -348,7 +358,7 @@ class SentinelTrainEvalPipeline:
                 data_loader=test_loader,
                 num_classes=config["data"]["num_classes"],
                 other_class_index=config["data"]["other_class_index"],
-                output_size=config["data"]["sentinel_patch_size"],
+                output_size=output_size,
                 class_name_mapping=class_labels,
                 log_confusion_matrix=config["evaluation"]["log_confusion_matrix"],
                 sample_ids_to_plot=config["evaluation"]["log_sample_ids"],
