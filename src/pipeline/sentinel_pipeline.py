@@ -46,12 +46,22 @@ class SentinelTrainEvalPipeline:
         logs_path: Path = Path(logs_dir).expanduser().resolve() if logs_dir else Path.cwd()
         self.log_file = logs_path / f"sentinel_pipeline_{timestamp}{run_suffix}.log"
 
-    def run(self, config: dict[str, Any], *, no_stdout_logs: bool = False) -> None:
+    def run(
+        self,
+        config: dict[str, Any],
+        *,
+        no_stdout_logs: bool = False,
+        pruning_callback: Any | None = None,
+    ) -> dict[str, Any]:
         """Execute the Sentinel-2 training and evaluation pipeline.
 
         Args:
             config: Configuration dictionary for the pipeline.
             no_stdout_logs: Flag to control logging to stdout. Defaults to False.
+            pruning_callback: Optional callback for Optuna pruning.
+
+        Returns:
+            Dictionary with training metrics including best_val_miou.
 
         """
         mlflow_cfg = config["mlflow"]
@@ -141,6 +151,7 @@ class SentinelTrainEvalPipeline:
                 centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
                 sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                context_size=config["data"].get("context_size"),
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
@@ -153,6 +164,7 @@ class SentinelTrainEvalPipeline:
                 centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
                 sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                context_size=config["data"].get("context_size"),
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
@@ -165,6 +177,7 @@ class SentinelTrainEvalPipeline:
                 centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
                 sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                context_size=config["data"].get("context_size"),
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
@@ -253,7 +266,7 @@ class SentinelTrainEvalPipeline:
 
             logger.info("Starting training Sentinel-2 model %s", config["model"]["model_type"])
 
-            train(
+            metrics = train(
                 model=model,
                 train_loader=train_loader,
                 val_loader=val_loader,
@@ -263,6 +276,10 @@ class SentinelTrainEvalPipeline:
                 device=device,
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
+                num_classes=config["data"]["num_classes"],
+                other_class_index=config["data"].get("other_class_index"),
+                pruning_callback=pruning_callback,
+                output_size=config["data"]["sentinel_patch_size"],
             )
 
             logger.info("Training finished. Evaluating the model...")
@@ -322,6 +339,7 @@ class SentinelTrainEvalPipeline:
                 data_loader=test_loader,
                 num_classes=config["data"]["num_classes"],
                 other_class_index=config["data"]["other_class_index"],
+                output_size=config["data"]["sentinel_patch_size"],
                 class_name_mapping=class_labels,
                 log_confusion_matrix=config["evaluation"]["log_confusion_matrix"],
                 sample_ids_to_plot=config["evaluation"]["log_sample_ids"],
@@ -339,6 +357,8 @@ class SentinelTrainEvalPipeline:
             )
 
             logger.info("Sentinel-2 pipeline completed successfully.")
+
+            return metrics
 
 
 def add_train_eval_arguments(

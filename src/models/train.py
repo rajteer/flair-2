@@ -7,6 +7,7 @@ from typing import Any
 
 import mlflow
 import torch
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torchinfo import summary
 from torchmetrics.classification import MulticlassJaccardIndex
@@ -34,6 +35,52 @@ BATCH_INDEX_TARGETS = 1
 BATCH_INDEX_PAD_MASK = 2
 BATCH_INDEX_SAMPLE_IDS = 3
 BATCH_INDEX_POSITIONS = 4
+
+
+def prepare_output_for_comparison(
+    outputs: torch.Tensor,
+    target_size: tuple[int, int],
+    output_size: int | None = None,
+) -> torch.Tensor:
+    """Prepare model outputs for comparison with target mask.
+
+    When using context window (model output larger than output_size), center-crops
+    to output_size first, then upsamples to target_size.
+
+    Args:
+        outputs: Model predictions with shape (B, C, H, W)
+        target_size: Target spatial size (height, width) to match mask
+        output_size: Expected output spatial size for center-cropping.
+            If provided and output is larger, center-crops to this size.
+            Use sentinel_patch_size when using context window.
+
+    Returns:
+        Tensor with shape (B, C, target_size[0], target_size[1])
+
+    """
+    if outputs.shape[-2:] == target_size:
+        return outputs
+
+    out_h, out_w = outputs.shape[-2:]
+
+    # Center-crop if using context window
+    if output_size is not None and out_h > output_size:
+        crop_margin_h = (out_h - output_size) // 2
+        crop_margin_w = (out_w - output_size) // 2
+        outputs = outputs[
+            :, :, crop_margin_h : out_h - crop_margin_h, crop_margin_w : out_w - crop_margin_w
+        ]
+
+    # Upsample to target size
+    if outputs.shape[-2:] != target_size:
+        outputs = F.interpolate(
+            outputs,
+            size=target_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    return outputs
 
 
 def _log_model_description(
@@ -111,6 +158,7 @@ def _train_epoch_temporal(
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
+    output_size: int | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
@@ -150,6 +198,8 @@ def _train_epoch_temporal(
         if supports_pad_mask:
             with ctx:
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+                # Prepare outputs for loss (center-crop + upsample if using context window)
+                outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
                 loss = criterion(outputs, y)
                 loss_value = loss.item()
                 loss = loss / accumulation_steps
@@ -247,10 +297,15 @@ def _validate_epoch_temporal(
     device: torch.device,
     num_classes: int,
     ignore_index: int | None = None,
+    output_size: int | None = None,
 ) -> tuple[float, float]:
     """Validate a temporal model for a single epoch and return average loss and mIoU.
 
     Temporal models receive batch_positions and pad_mask arguments.
+
+    Args:
+        output_size: Expected output spatial size for center-cropping when using context window.
+
     """
     model.eval()
     val_loss = 0.0
@@ -276,6 +331,9 @@ def _validate_epoch_temporal(
                 outputs = model(x, batch_positions=batch_positions)
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
+
+            # Prepare outputs for mIoU (center-crop + upsample if using context window)
+            outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
 
             preds = outputs.argmax(dim=1)
             miou_metric.update(preds, y)
@@ -336,6 +394,7 @@ def train(
     log_evaluation_metrics: bool = True,
     log_model: bool = True,
     pruning_callback: Any | None = None,
+    output_size: int | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -434,6 +493,7 @@ def train(
                 accumulation_steps,
                 use_amp,
                 step_scheduler,
+                output_size,
             )
         else:
             loss_epoch = train_epoch_fn(
@@ -458,6 +518,7 @@ def train(
             device,
             num_classes,
             other_class_index,
+            output_size,
         )
         losses_val.append(val_loss)
         mious_val.append(val_miou)

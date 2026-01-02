@@ -185,9 +185,11 @@ class TSViT(nn.Module):
             patch_size: Edge length of each Vision Transformer patch.
             in_channels: Number of spectral channels produced by the dataset.
             num_classes: Number of segmentation categories.
-            max_seq_len: Maximum temporal length for one-hot position encoding.
-                Use 12 for month-of-year encoding (0-11), 366 for day-of-year encoding (0-365).
-                Position indices are one-hot encoded and projected to embedding dimension.
+            max_seq_len: Size of the one-hot position encoding. The last index
+                (max_seq_len - 1) is reserved for padding tokens, so valid position
+                indices must be in range [0, max_seq_len - 2]. Set to 13 for
+                month-of-year encoding (months 0-11 + padding) or 367 for
+                day-of-year encoding (days 0-365 + padding).
             dim: Embedding dimension of token representations.
             temporal_depth: Number of transformer blocks in the temporal encoder.
             spatial_depth: Number of transformer blocks in the spatial encoder.

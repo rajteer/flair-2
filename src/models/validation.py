@@ -3,6 +3,7 @@ import logging
 import time
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 from torchmetrics import Metric
@@ -30,6 +31,53 @@ BATCH_INDEX_TARGETS = 1
 BATCH_INDEX_PAD_MASK = 2
 BATCH_INDEX_SAMPLE_IDS = 3
 BATCH_INDEX_POSITIONS = 4
+
+
+def upsample_predictions(
+    outputs: torch.Tensor,
+    target_size: tuple[int, int],
+    output_size: int | None = None,
+) -> torch.Tensor:
+    """Upsample model predictions to match the target mask size.
+
+    Uses bilinear interpolation on logits (before argmax) for smoother boundaries.
+    When using context window, center-crops to output_size before upsampling.
+
+    Args:
+        outputs: Model outputs with shape (B, C, H, W) where C is num_classes.
+        target_size: Tuple of (height, width) to upsample to (mask size).
+        output_size: Expected output spatial size after center-crop. If provided and
+            model output is larger, center-crops to this size before upsampling.
+            Use sentinel_patch_size when using context window.
+
+    Returns:
+        Upsampled predictions with shape (B, target_size[0], target_size[1]).
+
+    """
+    if outputs.shape[-2:] == target_size:
+        return outputs.argmax(dim=1)
+
+    out_h, out_w = outputs.shape[-2:]
+
+    # Center-crop if using context window (output_size specified and output is larger)
+    if output_size is not None and out_h > output_size:
+        crop_margin_h = (out_h - output_size) // 2
+        crop_margin_w = (out_w - output_size) // 2
+        outputs = outputs[
+            :,
+            :,
+            crop_margin_h : out_h - crop_margin_h,
+            crop_margin_w : out_w - crop_margin_w,
+        ]
+
+    upsampled = F.interpolate(
+        outputs,
+        size=target_size,
+        mode="bilinear",
+        align_corners=False,
+    )
+
+    return upsampled.argmax(dim=1)
 
 
 def calculate_iou_scores(
@@ -249,8 +297,15 @@ def _evaluate_batches_temporal(
     num_classes: int,
     evaluation_metrics_dict: dict[str, Metric],
     sample_ids_to_log: set[str],
+    output_size: int | None = None,
 ) -> tuple[list[float], list[int]]:
-    """Iterate over dataloader for temporal models, update metrics, and collect timing stats."""
+    """Iterate over dataloader for temporal models, update metrics, and collect timing stats.
+
+    Args:
+        output_size: Expected output spatial size for center-cropping when using context window.
+            Pass sentinel_patch_size when context_size > sentinel_patch_size.
+
+    """
     inference_times: list[float] = []
     batch_sizes: list[int] = []
 
@@ -279,8 +334,13 @@ def _evaluate_batches_temporal(
 
             processed_outputs = process_segmentation_tensor(outputs, num_classes)
 
+            target_size = (targets.shape[-2], targets.shape[-1])
+            upsampled_preds = upsample_predictions(
+                processed_outputs, target_size, output_size=output_size
+            )
+
             for metric in evaluation_metrics_dict.values():
-                metric.update(processed_outputs, targets)
+                metric.update(upsampled_preds, targets)
 
             if sample_ids_to_log:
                 selected_ids = {
@@ -320,8 +380,11 @@ def _evaluate_batches_standard(
 
             processed_outputs = process_segmentation_tensor(outputs, num_classes)
 
+            target_size = (targets.shape[-2], targets.shape[-1])
+            upsampled_preds = upsample_predictions(processed_outputs, target_size)
+
             for metric in evaluation_metrics_dict.values():
-                metric.update(processed_outputs, targets)
+                metric.update(upsampled_preds, targets)
 
             if sample_ids_to_log:
                 selected_ids = {
@@ -380,7 +443,6 @@ def _finalize_evaluation(
     }
     metrics.update(per_class_metrics)
 
-    # Add per-class F1 scores to metrics
     per_class_f1_metrics = {
         f"f1_class_{class_name_mapping.get(i, f'class_{i}')}": v for i, v in per_class_f1.items()
     }
@@ -425,6 +487,7 @@ def evaluate(
     num_classes: int,
     other_class_index: int = 13,
     *,
+    output_size: int | None = None,
     log_eval_metrics: bool = True,
     log_confusion_matrix: bool = True,
     normalize_confusion_matrix: bool = True,
@@ -482,6 +545,7 @@ def evaluate(
             num_classes,
             evaluation_metrics_dict,
             sample_ids_to_log,
+            output_size=output_size,
         )
     else:
         logger.info("Detected standard model. Using standard evaluation.")
@@ -495,7 +559,6 @@ def evaluate(
             sample_ids_to_log,
         )
 
-    # Create and log zone prediction mosaic if configured
     if zone_mosaic_config and zone_mosaic_config.get("enabled", False):
         if zone_data_loader is None:
             logger.warning(

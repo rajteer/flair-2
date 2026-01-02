@@ -42,6 +42,7 @@ class FlairSentinelDataset(Dataset):
         num_classes: int = 13,
         sentinel_patch_size: int = 10,
         *,
+        context_size: int | None = None,
         use_monthly_average: bool = True,
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
@@ -54,7 +55,10 @@ class FlairSentinelDataset(Dataset):
             sentinel_dir: Directory containing Sentinel-2 superpatch data
             centroids_path: Path to JSON file mapping image IDs to superpatch coordinates
             num_classes: Number of segmentation classes (default: 13)
-            sentinel_patch_size: Size of Sentinel-2 patch to extract in Sentinel pixels.
+            sentinel_patch_size: Size of the output Sentinel-2 patch (center crop).
+            context_size: Size of the input Sentinel-2 patch to extract. Must be >= sentinel_patch_size.
+                If None, defaults to sentinel_patch_size (no extra context).
+                Use larger values (e.g., 20, 40) to provide spatial context during training.
             use_monthly_average: Whether to compute monthly averages from cloudless dates.
                 Reduces temporal variability and produces up to 12 monthly images.
             cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1).
@@ -70,6 +74,7 @@ class FlairSentinelDataset(Dataset):
         self.sentinel_dir = Path(sentinel_dir)
         self.num_classes = num_classes
         self.sentinel_patch_size = sentinel_patch_size
+        self.context_size = context_size if context_size is not None else sentinel_patch_size
         self.use_monthly_average = use_monthly_average
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
@@ -109,7 +114,7 @@ class FlairSentinelDataset(Dataset):
                 - sentinel_data: Tensor with shape (M, C, H, W) where M is the number
                   of months with valid cloudless data (≤12 for single year, can be
                   larger for multi-year datasets)
-                - mask: Tensor of shape (H, W) where H=W=sentinel_patch_size
+                - mask: Tensor of shape (512, 512) - original FLAIR mask resolution
                 - sample_id: String ID of the sample
                 - month_positions: Tensor of shape (M,) with month indices (0-11)
 
@@ -130,14 +135,7 @@ class FlairSentinelDataset(Dataset):
         mask = tifffile.imread(label_path)
         mask = np.where(mask <= MAX_ORIGINAL_CLASS, mask, OTHER_CLASS)
         mask -= 1
-
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).float()
-        mask_tensor = torch.nn.functional.interpolate(
-            mask_tensor,
-            size=(self.sentinel_patch_size, self.sentinel_patch_size),
-            mode="nearest",
-        )
-        mask = mask_tensor.squeeze().long()
+        mask = torch.from_numpy(mask).long()
 
         return sentinel_data, mask, sample_id, month_positions
 
@@ -165,7 +163,7 @@ class FlairSentinelDataset(Dataset):
             sp_data,
             centroid_x,
             centroid_y,
-            self.sentinel_patch_size,
+            self.context_size,
         )
 
         sp_masks_path = self.sentinel_masks_dict.get(domain_zone)
