@@ -58,8 +58,13 @@ def load_sentinel_superpatch_paths(
     sentinel_dates_dict = {}
 
     for sp_data_path in sentinel_dir.rglob("*_data.npy"):
-        parts = sp_data_path.parts
-        domain_zone = f"{parts[-4]}/{parts[-3]}"
+        domain_zone = extract_domain_zone_from_path(sp_data_path)
+        if domain_zone is None:
+            logger.warning(
+                "Could not extract domain/zone from Sentinel path: %s",
+                sp_data_path,
+            )
+            continue
 
         sentinel_data_dict[domain_zone] = sp_data_path
 
@@ -82,6 +87,28 @@ def load_sentinel_superpatch_paths(
     return sentinel_data_dict, sentinel_masks_dict, sentinel_dates_dict
 
 
+def extract_domain_zone_from_path(file_path: Path) -> str | None:
+    """Extract domain and zone from file path using pattern matching.
+
+    Searches for domain (D###_####) and zone (Z##_XX) directories in the path.
+    This is more robust than using fixed indices as it works regardless of
+    directory nesting depth.
+
+    Args:
+        file_path: Path to any file in the domain/zone structure
+
+    Returns:
+        String in format "DOMAIN/ZONE" (e.g., "D004_2021/Z14_AU") or None if not found
+
+    """
+    path_str = str(file_path)
+    # Match patterns like D004_2021/Z14_AU or D091_2021/Z2_UA
+    match = re.search(r"(D\d+_\d{4})[\\/](Z\d+_[A-Z]{2})", path_str)
+    if match:
+        return f"{match.group(1)}/{match.group(2)}"
+    return None
+
+
 def extract_domain_zone(file_path: Path) -> str:
     """Extract domain and zone from file path.
 
@@ -91,10 +118,15 @@ def extract_domain_zone(file_path: Path) -> str:
     Returns:
         String in format "DOMAIN/ZONE" (e.g., "D004_2021/Z14_AU")
 
+    Raises:
+        ValueError: If domain/zone pattern cannot be found in path
+
     """
-    parts = file_path.parts
-    # Path structure: .../domain/zone/img/IMG_*.tif
-    return f"{parts[-4]}/{parts[-3]}"
+    result = extract_domain_zone_from_path(file_path)
+    if result is None:
+        msg = f"Could not extract domain/zone from path: {file_path}"
+        raise ValueError(msg)
+    return result
 
 
 def parse_sentinel_date(product_name: str) -> tuple[int, int]:
