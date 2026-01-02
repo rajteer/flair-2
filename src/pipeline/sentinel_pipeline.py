@@ -44,6 +44,7 @@ class SentinelTrainEvalPipeline:
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", run_name).strip("_") if run_name else ""
         run_suffix = f"_{safe_name}" if safe_name else ""
         logs_path: Path = Path(logs_dir).expanduser().resolve() if logs_dir else Path.cwd()
+        logs_path.mkdir(parents=True, exist_ok=True)
         self.log_file = logs_path / f"sentinel_pipeline_{timestamp}{run_suffix}.log"
 
     def run(
