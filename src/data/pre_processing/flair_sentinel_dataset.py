@@ -179,7 +179,13 @@ class FlairSentinelDataset(Dataset):
         mask = tifffile.imread(label_path)
         mask = np.where(mask <= MAX_ORIGINAL_CLASS, mask, OTHER_CLASS)
         mask -= 1
-        mask = torch.from_numpy(mask).long()
+        mask_tensor = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0)
+        mask_tensor = torch.nn.functional.interpolate(
+            mask_tensor,
+            size=(self.sentinel_patch_size, self.sentinel_patch_size),
+            mode="nearest",
+        )
+        mask = mask_tensor.squeeze().long()
 
         return sentinel_data, mask, sample_id, month_positions
 
