@@ -146,21 +146,11 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
             mlflow.set_tag("data_type", "sentinel_2_only")
 
-            upsample_size = config["data"].get("upsample_size")
             sentinel_patch_size = config["data"]["sentinel_patch_size"]
-            context_size = config["data"].get("context_size")
+            output_size = sentinel_patch_size
 
-            if upsample_size:
-                if context_size:
-                    # Scale output_size to match the target FOV in the upsampled domain
-                    # ratio = target_fov / input_fov = sentinel_patch_size / context_size
-                    # e.g. 512 * (10 / 40) = 128
-                    output_size = int(upsample_size * (sentinel_patch_size / context_size))
-                else:
-                    output_size = None
-            else:
-                # Standard behavior (low res)
-                output_size = sentinel_patch_size
+            model_type = config["model"]["model_type"].upper()
+            date_encoding_mode = "month" if model_type == "TSVIT" else "days"
 
             test_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["test"]["masks"],
@@ -175,7 +165,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
-                upsample_size=config["data"].get("upsample_size"),
+                date_encoding_mode=date_encoding_mode,
             )
 
             train_dataset = FlairSentinelDataset(
@@ -191,7 +181,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
-                upsample_size=config["data"].get("upsample_size"),
+                date_encoding_mode=date_encoding_mode,
             )
 
             val_dataset = FlairSentinelDataset(
@@ -207,7 +197,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
-                upsample_size=config["data"].get("upsample_size"),
+                date_encoding_mode=date_encoding_mode,
             )
 
             generator = create_generator(seed)
@@ -348,7 +338,7 @@ class SentinelTrainEvalPipeline:
                         sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
                         sentinel_mean=config["data"].get("sentinel_mean"),
                         sentinel_std=config["data"].get("sentinel_std"),
-                        upsample_size=config["data"].get("upsample_size"),
+                        date_encoding_mode=date_encoding_mode,
                     )
                     zone_data_loader = DataLoader(
                         zone_dataset,
