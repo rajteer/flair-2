@@ -102,8 +102,8 @@ def extract_domain_zone_from_path(file_path: Path) -> str | None:
 
     """
     path_str = str(file_path)
-    # Match patterns like D004_2021/Z14_AU or D091_2021/Z2_UA
-    match = re.search(r"(D\d+_\d{4})[\\/](Z\d+_[A-Z]{2})", path_str)
+    # Match patterns like D004_2021/Z14_AU or D091_2021/Z2_UA or D006_2020/Z9_N
+    match = re.search(r"(D\d+_\d{4})[\\/](Z\d+_[A-Z]{1,2})", path_str)
     if match:
         return f"{match.group(1)}/{match.group(2)}"
     return None

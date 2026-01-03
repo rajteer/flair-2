@@ -123,6 +123,26 @@ class FlairSentinelDataset(Dataset):
             load_dates=True,
         )
 
+        original_count = len(self.ids)
+        valid_ids = []
+        for sample_id in self.ids:
+            feature_path = self.features_dict[sample_id]
+            try:
+                domain_zone = extract_domain_zone(feature_path)
+                if domain_zone in self.sentinel_data_dict:
+                    valid_ids.append(sample_id)
+            except ValueError:
+                continue
+
+        self.ids = valid_ids
+        filtered_count = original_count - len(self.ids)
+        if filtered_count > 0:
+            logger.warning(
+                "Filtered %d samples (out of %d) without matching Sentinel data",
+                filtered_count,
+                original_count,
+            )
+
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
         return len(self.ids)
