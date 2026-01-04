@@ -290,7 +290,7 @@ def build_lr_scheduler(
     # OneCycleLR requires steps_per_epoch and epochs
     if scheduler_type == "OneCycleLR":
         if scheduler_args.get("steps_per_epoch") is None and steps_per_epoch is not None:
-            scheduler_args["steps_per_epoch"] = steps_per_epoch
+            scheduler_args["steps_per_epoch"] = steps_per_epoch + 1
         if scheduler_args.get("epochs") is None and epochs is not None:
             scheduler_args["epochs"] = epochs
 
