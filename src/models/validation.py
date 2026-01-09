@@ -51,11 +51,11 @@ def upsample_predictions(
             Use sentinel_patch_size when using context window.
 
     Returns:
-        Upsampled predictions with shape (B, target_size[0], target_size[1]).
+        Upsampled logits with shape (B, C, target_size[0], target_size[1]).
 
     """
     if outputs.shape[-2:] == target_size:
-        return outputs.argmax(dim=1)
+        return outputs
 
     out_h, out_w = outputs.shape[-2:]
 
@@ -77,7 +77,7 @@ def upsample_predictions(
         align_corners=False,
     )
 
-    return upsampled.argmax(dim=1)
+    return upsampled
 
 
 def calculate_iou_scores(
@@ -332,17 +332,17 @@ def _evaluate_batches_temporal(
             inference_times.append(batch_time)
             batch_sizes.append(inputs.shape[0])
 
-            processed_outputs = process_segmentation_tensor(outputs, num_classes)
-
             target_size = (targets.shape[-2], targets.shape[-1])
-            upsampled_preds = upsample_predictions(
-                processed_outputs,
+            upsampled_outputs = upsample_predictions(
+                outputs,
                 target_size,
                 output_size=output_size,
             )
 
+            processed_preds = process_segmentation_tensor(upsampled_outputs, num_classes)
+
             for metric in evaluation_metrics_dict.values():
-                metric.update(upsampled_preds, targets)
+                metric.update(processed_preds, targets)
 
             if sample_ids_to_log:
                 selected_ids = {
@@ -380,13 +380,14 @@ def _evaluate_batches_standard(
             inference_times.append(batch_time)
             batch_sizes.append(inputs.shape[0])
 
-            processed_outputs = process_segmentation_tensor(outputs, num_classes)
-
+            # Upsample raw logits first (before argmax) for smoother boundaries
             target_size = (targets.shape[-2], targets.shape[-1])
-            upsampled_preds = upsample_predictions(processed_outputs, target_size)
+            upsampled_outputs = upsample_predictions(outputs, target_size)
+
+            processed_preds = process_segmentation_tensor(upsampled_outputs, num_classes)
 
             for metric in evaluation_metrics_dict.values():
-                metric.update(upsampled_preds, targets)
+                metric.update(processed_preds, targets)
 
             if sample_ids_to_log:
                 selected_ids = {

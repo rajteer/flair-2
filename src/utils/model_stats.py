@@ -43,7 +43,7 @@ def compute_model_complexity(
             logger.info(
                 "Computing FLOPs for temporal model: input_size=%s, device=%s, "
                 "batch_positions.shape=%s, batch_positions.device=%s",
-                input_size, device, batch_positions.shape, batch_positions.device
+                input_size, device, batch_positions.shape, batch_positions.device,
             )
             flops, macs, params = calculate_flops(
                 model=model,
