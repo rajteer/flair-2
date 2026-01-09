@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,7 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("data_type", "sentinel_2_only")
 
             sentinel_patch_size = config["data"]["sentinel_patch_size"]
+            pad_value = config["data"].get("pad_value", -1)
             output_size = sentinel_patch_size
 
             model_type = config["model"]["model_type"].upper()
@@ -203,6 +205,8 @@ class SentinelTrainEvalPipeline:
             generator = create_generator(seed)
             num_workers = config["data"]["num_workers"]
 
+            collate_with_pad = partial(pad_collate_sentinel, pad_value=pad_value)
+
             train_loader = DataLoader(
                 train_dataset,
                 batch_size=config["data"]["batch_size"],
@@ -211,7 +215,7 @@ class SentinelTrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 generator=generator,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_sentinel,
+                collate_fn=collate_with_pad,
             )
 
             val_loader = DataLoader(
@@ -221,7 +225,7 @@ class SentinelTrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_sentinel,
+                collate_fn=collate_with_pad,
             )
 
             test_loader = DataLoader(
@@ -231,7 +235,7 @@ class SentinelTrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_sentinel,
+                collate_fn=collate_with_pad,
             )
 
             criterion = build_loss_function(
@@ -249,13 +253,17 @@ class SentinelTrainEvalPipeline:
                 "Using device: %s",
                 torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU",
             )
+            model_config = config["model"].get("model_config", {})
+            if model_type == "UTAE":
+                model_config = {**model_config, "pad_value": pad_value}
+
             model = build_model(
                 model_type=config["model"]["model_type"],
                 encoder_name=config["model"].get("encoder_name", ""),
                 encoder_weights=config["model"].get("encoder_weights"),
                 in_channels=config["model"]["in_channels"],
                 n_classes=config["data"]["num_classes"],
-                model_config=config["model"].get("model_config"),
+                model_config=model_config,
             )
 
             model.to(device)
@@ -345,7 +353,7 @@ class SentinelTrainEvalPipeline:
                         batch_size=config["data"]["batch_size"],
                         shuffle=False,
                         num_workers=num_workers,
-                        collate_fn=pad_collate_sentinel,
+                        collate_fn=collate_with_pad,
                     )
                 else:
                     logger.warning(
