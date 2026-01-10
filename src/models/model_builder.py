@@ -2,12 +2,12 @@ import logging
 from typing import Any
 
 import segmentation_models_pytorch as smp
-from backbones.utae import UTAE
 from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
 from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
+from src.models.utae_pp import UTAE
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,11 @@ def build_model(
             "return_maps": utae_config.get("return_maps", False),
             "pad_value": utae_config.get("pad_value", 0),
             "padding_mode": utae_config.get("padding_mode", "reflect"),
+            # New U-TAE++ options
+            "use_convnext": utae_config.get("use_convnext", True),
+            "use_cbam": utae_config.get("use_cbam", True),
+            "drop_path_rate": utae_config.get("drop_path_rate", 0.1),
+            "deep_supervision": utae_config.get("deep_supervision", False),
         }
 
         return UTAE(**utae_params)
