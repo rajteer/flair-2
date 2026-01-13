@@ -481,8 +481,80 @@ class CBAM(nn.Module):
         return x
 
 
+class CoordinateAttention(nn.Module):
+    """Coordinate Attention module (Hou et al., CVPR 2021).
+
+    Unlike CBAM which loses spatial information via global pooling,
+    Coordinate Attention encodes channel relationships while preserving
+    precise positional information via 1D horizontal and vertical pooling.
+
+    Reference: https://arxiv.org/abs/2103.02907
+    """
+
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        reduced_channels = max(8, channels // reduction)
+
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+
+        self.conv1 = nn.Conv2d(channels, reduced_channels, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(reduced_channels)
+        self.act = nn.GELU()
+
+        self.conv_h = nn.Conv2d(reduced_channels, channels, kernel_size=1, bias=False)
+        self.conv_w = nn.Conv2d(reduced_channels, channels, kernel_size=1, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+
+        # Encode spatial info along each axis
+        x_h = self.pool_h(x)  # (B, C, H, 1)
+        x_w = self.pool_w(x).permute(0, 1, 3, 2)  # (B, C, W, 1) -> (B, C, 1, W) -> permute to (B, C, W, 1)
+
+        # Concatenate and reduce
+        y = torch.cat([x_h, x_w], dim=2)  # (B, C, H+W, 1)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+
+        # Split back
+        x_h, x_w = torch.split(y, [h, w], dim=2)
+        x_w = x_w.permute(0, 1, 3, 2)  # (B, C, W, 1) -> (B, C, 1, W)
+
+        # Generate attention maps
+        a_h = torch.sigmoid(self.conv_h(x_h))
+        a_w = torch.sigmoid(self.conv_w(x_w))
+
+        # Apply attention
+        return x * a_h * a_w
+
+
+def build_attention(attention_type: str, channels: int, reduction: int = 16) -> nn.Module:
+    """Factory function to build attention modules.
+
+    Args:
+        attention_type: Type of attention ('cbam', 'coord', or 'none')
+        channels: Number of input channels
+        reduction: Channel reduction ratio
+
+    Returns:
+        Attention module or identity-like fallback
+    """
+    if attention_type == "cbam":
+        return CBAM(channels, reduction)
+    elif attention_type == "coord":
+        return CoordinateAttention(channels, reduction)
+    else:  # 'none' or any other value
+        return nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=1),
+            nn.BatchNorm2d(channels),
+            nn.GELU(),
+        )
+
+
 class UpConvBlock(nn.Module):
-    """Upsampling block with optional CBAM attention."""
+    """Upsampling block with configurable attention (CBAM, Coordinate, or none)."""
 
     def __init__(
         self,
@@ -494,21 +566,14 @@ class UpConvBlock(nn.Module):
         norm: str = "batch",
         d_skip: int | None = None,
         padding_mode: str = "reflect",
-        use_cbam: bool = True,
+        attention_type: str = "coord",
         use_convnext: bool = True,
         drop_path: float = 0.0,
     ):
         super().__init__()
         d = d_out if d_skip is None else d_skip
 
-        if use_cbam:
-            self.skip_attn = CBAM(d)
-        else:
-            self.skip_attn = nn.Sequential(
-                nn.Conv2d(d, d, kernel_size=1),
-                nn.BatchNorm2d(d),
-                nn.GELU(),
-            )
+        self.skip_attn = build_attention(attention_type, d)
 
         self.up = nn.Sequential(
             nn.ConvTranspose2d(d_in, d_out, kernel_size=k, stride=s, padding=p),
@@ -631,7 +696,7 @@ class UTAE(nn.Module):
         pad_value: Padding value for temporal sequences
         padding_mode: Padding mode for convolutions
         use_convnext: Use ConvNeXt-style blocks
-        use_cbam: Use CBAM attention in decoder
+        attention_type: Decoder attention type ('coord', 'cbam', or 'none')
         drop_path_rate: Stochastic depth rate
         deep_supervision: Enable auxiliary outputs for deep supervision
 
@@ -656,7 +721,7 @@ class UTAE(nn.Module):
         pad_value: float = 0,
         padding_mode: str = "reflect",
         use_convnext: bool = True,
-        use_cbam: bool = True,
+        attention_type: str = "coord",
         drop_path_rate: float = 0.1,
         deep_supervision: bool = False,
     ):
@@ -732,7 +797,7 @@ class UTAE(nn.Module):
                     p=str_conv_p,
                     norm="batch",
                     padding_mode=padding_mode,
-                    use_cbam=use_cbam,
+                    attention_type=attention_type,
                     use_convnext=use_convnext,
                     drop_path=dpr[-(i * 2 + 1)] if i < len(dpr) // 2 else 0.0,
                 )

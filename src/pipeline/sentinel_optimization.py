@@ -75,6 +75,58 @@ class SentinelOptimizationPipeline:
             for item in model_specific[model_type]:
                 self._suggest_single_param(trial, config, item)
 
+        # Apply UTAE++ specific constraints after all params are suggested
+        if model_type == "utae":
+            self._apply_utae_constraints(trial, config)
+
+    def _apply_utae_constraints(self, trial: optuna.Trial, config: dict[str, Any]) -> None:
+        """Apply UTAE++ specific parameter constraints and mappings."""
+        model_config = config.get("model", {}).get("model_config", {})
+
+        # -----------------------------------------------------------------
+        # 1. Model size -> encoder/decoder widths mapping
+        # -----------------------------------------------------------------
+        model_size = model_config.get("model_size") or trial.params.get("model_size")
+        if model_size:
+            size_mapping = {
+                "nano": {
+                    "encoder_widths": [32, 32, 64, 64],
+                    "decoder_widths": [32, 32, 64, 64],
+                },
+                "tiny": {
+                    "encoder_widths": [32, 64, 128, 128],
+                    "decoder_widths": [32, 64, 128, 128],
+                },
+                "base": {
+                    "encoder_widths": [64, 64, 128, 256],
+                    "decoder_widths": [64, 64, 128, 256],
+                },
+            }
+            if model_size in size_mapping:
+                for key, value in size_mapping[model_size].items():
+                    update_nested_dict(config, f"model.model_config.{key}", value)
+                # Remove the helper param so it doesn't confuse the model builder
+                model_config.pop("model_size", None)
+
+        # -----------------------------------------------------------------
+        # 2. n_head / d_model constraint: n_head=32 requires d_model=512
+        # -----------------------------------------------------------------
+        n_head = model_config.get("n_head", 16)
+        d_model = model_config.get("d_model", 256)
+
+        if n_head == 32 and d_model < 512:
+            # Force d_model=512 when using 32 heads
+            update_nested_dict(config, "model.model_config.d_model", 512)
+            logger.info("Constraint applied: n_head=32 -> forcing d_model=512")
+
+        # Ensure d_k is sensible: d_k <= d_model // n_head
+        d_k = model_config.get("d_k", 16)
+        effective_d_model = config["model"]["model_config"].get("d_model", d_model)
+        max_d_k = effective_d_model // n_head
+        if d_k > max_d_k:
+            update_nested_dict(config, "model.model_config.d_k", max_d_k)
+            logger.info("Constraint applied: d_k=%d > d_model/n_head=%d -> clamped to %d", d_k, max_d_k, max_d_k)
+
     def _suggest_single_param(
         self,
         trial: optuna.Trial,
@@ -86,11 +138,13 @@ class SentinelOptimizationPipeline:
         param_type = item["type"]
 
         if param_type == "float":
+            step = item.get("step")
             val = trial.suggest_float(
                 name,
                 item["low"],
                 item["high"],
                 log=item.get("log", False),
+                step=step,
             )
         elif param_type == "int":
             val = trial.suggest_int(name, item["low"], item["high"], log=item.get("log", False))

@@ -21,6 +21,15 @@ from src.models.tsvit import TSViT
 from src.models.unetformer import UNetFormer
 
 
+def _resolve_attention_type(config: dict[str, Any]) -> str:
+    """Resolve attention_type from config, with backward compatibility for use_cbam."""
+    if "attention_type" in config:
+        return config["attention_type"]
+    # Backward compatibility: convert use_cbam bool to attention_type string
+    use_cbam = config.get("use_cbam", True)
+    return "cbam" if use_cbam else "none"
+
+
 def build_model(
     model_type: str,
     encoder_name: str,
@@ -82,7 +91,7 @@ def build_model(
             "padding_mode": utae_config.get("padding_mode", "reflect"),
             # New U-TAE++ options
             "use_convnext": utae_config.get("use_convnext", True),
-            "use_cbam": utae_config.get("use_cbam", True),
+            "attention_type": _resolve_attention_type(utae_config),
             "drop_path_rate": utae_config.get("drop_path_rate", 0.1),
             "deep_supervision": utae_config.get("deep_supervision", False),
         }
