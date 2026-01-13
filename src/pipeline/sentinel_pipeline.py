@@ -316,6 +316,18 @@ class SentinelTrainEvalPipeline:
                 patience=config["training"]["early_stopping_patience"],
                 num_classes=config["data"]["num_classes"],
                 other_class_index=config["data"].get("other_class_index"),
+                accumulation_steps=accumulation_steps,
+                early_stopping_criterion=config["training"].get(
+                    "early_stopping_criterion",
+                    "loss",
+                ),
+                use_amp=bool(config["training"].get("use_amp", False)),
+                apply_augmentations=bool(
+                    config.get("data", {})
+                    .get("data_augmentation", {})
+                    .get("apply_augmentations", True)
+                ),
+                data_config=config.get("data"),
                 pruning_callback=pruning_callback,
                 output_size=output_size,
                 gradient_clip_val=config["training"].get("gradient_clip_val"),
