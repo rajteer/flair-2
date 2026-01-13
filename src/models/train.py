@@ -165,6 +165,7 @@ def _train_epoch_temporal(
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
     output_size: int | None = None,
+    gradient_clip_val: float | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
@@ -174,6 +175,7 @@ def _train_epoch_temporal(
     Args:
         scheduler: Optional step-level scheduler (e.g., OneCycleLR). If provided,
             scheduler.step() is called after each optimizer step.
+        gradient_clip_val: If provided, clip gradients to this max norm.
 
     """
     model.train()
@@ -220,6 +222,9 @@ def _train_epoch_temporal(
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            scaler.unscale_(optimizer)
+            if gradient_clip_val is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_val)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -243,6 +248,7 @@ def _train_epoch_standard(
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
+    gradient_clip_val: float | None = None,
 ) -> float:
     """Train a standard (non-temporal) model for a single epoch and return average loss.
 
@@ -285,6 +291,9 @@ def _train_epoch_standard(
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            scaler.unscale_(optimizer)
+            if gradient_clip_val is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_val)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -336,8 +345,6 @@ def _validate_epoch_temporal(
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
             else:
                 outputs = model(x, batch_positions=batch_positions)
-
-            # Prepare outputs for loss/mIoU (center-crop + upsample if using context window)
             outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
 
             loss = criterion(outputs, y)
@@ -403,6 +410,7 @@ def train(
     log_model: bool = True,
     pruning_callback: Any | None = None,
     output_size: int | None = None,
+    gradient_clip_val: float | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -502,6 +510,7 @@ def train(
                 use_amp,
                 step_scheduler,
                 output_size,
+                gradient_clip_val,
             )
         else:
             loss_epoch = train_epoch_fn(

@@ -186,6 +186,20 @@ class SentinelTrainEvalPipeline:
                 date_encoding_mode=date_encoding_mode,
             )
 
+            logger.info(
+                "Train dataset: %d samples (masks_dir=%s, sentinel_dir=%s)",
+                len(train_dataset),
+                config["data"]["train"]["masks"],
+                config["data"]["train"]["sentinel"],
+            )
+            if len(train_dataset) == 0:
+                raise ValueError(
+                    f"Train dataset is empty! Check paths:\n"
+                    f"  masks: {config['data']['train']['masks']}\n"
+                    f"  sentinel: {config['data']['train']['sentinel']}\n"
+                    f"  centroids: {config['data']['centroids_path']}"
+                )
+
             val_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["val"]["masks"],
                 sentinel_dir=config["data"]["val"]["sentinel"],
@@ -304,6 +318,7 @@ class SentinelTrainEvalPipeline:
                 other_class_index=config["data"].get("other_class_index"),
                 pruning_callback=pruning_callback,
                 output_size=output_size,
+                gradient_clip_val=config["training"].get("gradient_clip_val"),
             )
 
             logger.info("Training finished. Evaluating the model...")
