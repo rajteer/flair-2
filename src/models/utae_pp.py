@@ -837,19 +837,23 @@ class UTAE(nn.Module):
         self,
         input: torch.Tensor,
         batch_positions: torch.Tensor | None = None,
+        pad_mask: torch.Tensor | None = None,
         return_att: bool = False,
     ) -> torch.Tensor | tuple:
         """Args:
             input: Input tensor (B, T, C, H, W)
             batch_positions: Temporal positions (B, T)
+            pad_mask: Boolean padding mask (B, T) where True indicates padded timesteps.
+                If not provided, computed from input using self.pad_value.
             return_att: Return attention maps
 
         Returns:
             Segmentation output and optionally attention/auxiliary outputs
 
         """
-        # Compute padding mask
-        pad_mask = (input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
+        # Use external pad_mask if provided, otherwise compute from input
+        if pad_mask is None:
+            pad_mask = (input == self.pad_value).all(dim=-1).all(dim=-1).all(dim=-1)
 
         # Input convolution
         out = self.in_conv.smart_forward(input)
