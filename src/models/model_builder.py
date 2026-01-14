@@ -303,6 +303,9 @@ def build_lr_scheduler(
         return None
 
     scheduler_type = scheduler_config.get("type")
+    if scheduler_type is None:
+        return None
+    
     scheduler_args = dict(scheduler_config.get("args", {}))
 
     # OneCycleLR requires steps_per_epoch and epochs
