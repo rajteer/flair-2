@@ -81,7 +81,9 @@ class Decoder(nn.Module):
         res4: torch.Tensor,
         h: int,
         w: int,
-    ) -> torch.Tensor:
+        *,
+        return_aux_features: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = self.b4(self.pre_conv(res4))
         x = self.p3(x, res3)
         x = self.b3(x)
@@ -91,9 +93,14 @@ class Decoder(nn.Module):
 
         x = self.p1(x, res1)
 
+        # Store features for auxiliary head before segmentation
+        aux_features = x
+
         x = self.segmentation_head(x)
         x = functional.interpolate(x, size=(h, w), mode="bilinear", align_corners=False)
 
+        if return_aux_features:
+            return x, aux_features
         return x
 
     def init_weight(self) -> None:
@@ -118,6 +125,7 @@ class UNetFormer(nn.Module):
         window_size: Window size for attention. Default: 8
         num_classes: Number of output classes. Default: 6
         in_channels: Number of input channels. Default: 3
+        use_aux_head: Whether to use auxiliary head for deep supervision. Default: False
 
     """
 
@@ -130,8 +138,11 @@ class UNetFormer(nn.Module):
         window_size: int = 8,
         num_classes: int = 6,
         in_channels: int = 3,
+        *,
+        use_aux_head: bool = False,
     ) -> None:
         super().__init__()
+        self.use_aux_head = use_aux_head
 
         # Select out_indices based on encoder architecture
         # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
@@ -150,10 +161,30 @@ class UNetFormer(nn.Module):
         )
         encoder_channels = self.backbone.feature_info.channels()
 
-        self.decoder = Decoder(encoder_channels, decode_channels, dropout, window_size, num_classes)
+        self.decoder = Decoder(
+            encoder_channels,
+            decode_channels,
+            dropout,
+            window_size,
+            num_classes,
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Auxiliary head for deep supervision (as per paper)
+        if use_aux_head:
+            self.aux_head = AuxHead(
+                in_channels=decode_channels,
+                num_classes=num_classes,
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         h, w = x.size()[-2:]
         res1, res2, res3, res4 = self.backbone(x)
-        x = self.decoder(res1, res2, res3, res4, h, w)
-        return x
+
+        if self.use_aux_head and self.training:
+            main_out, aux_features = self.decoder(
+                res1, res2, res3, res4, h, w, return_aux_features=True
+            )
+            aux_out = self.aux_head(aux_features, h, w)
+            return main_out, aux_out
+
+        return self.decoder(res1, res2, res3, res4, h, w)

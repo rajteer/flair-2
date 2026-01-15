@@ -152,7 +152,7 @@ def build_model(
     if model_type.upper() == "UNETFORMER":
         unetformer_config = model_config or {}
 
-        return UNetFormer(
+        model = UNetFormer(
             decode_channels=unetformer_config.get("decode_channels", 64),
             dropout=unetformer_config.get("dropout", 0.1),
             backbone_name=encoder_name or unetformer_config.get("backbone_name", "swsl_resnet18"),
@@ -160,7 +160,11 @@ def build_model(
             window_size=unetformer_config.get("window_size", 8),
             num_classes=n_classes,
             in_channels=in_channels,
+            use_aux_head=unetformer_config.get("use_aux_head", False),
         )
+        # Store aux_loss_weight as model attribute for training loop access
+        model.aux_loss_weight = unetformer_config.get("aux_loss_weight", 0.4)
+        return model
 
     try:
         model_class = getattr(smp, model_type)
