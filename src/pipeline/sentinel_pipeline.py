@@ -316,12 +316,17 @@ class SentinelTrainEvalPipeline:
                     vflip_prob=sentinel_aug_config.get("vflip_prob", 0.5),
                     rotation_prob=sentinel_aug_config.get("rotation_prob", 0.5),
                     rotation_angles=sentinel_aug_config.get("rotation_angles", [0, 90, 180, 270]),
+                    channel_dropout_prob=sentinel_aug_config.get("channel_dropout_prob", 0.0),
+                    max_channels_drop=sentinel_aug_config.get("max_channels_drop", 2),
+                    gaussian_noise_std=sentinel_aug_config.get("gaussian_noise_std", 0.0),
                 )
                 logger.info(
-                    "Sentinel augmentation enabled (hflip=%.1f, vflip=%.1f, rot=%.1f)",
+                    "Sentinel augmentation: hflip=%.1f, vflip=%.1f, rot=%.1f, ch_drop=%.1f, noise=%.2f",
                     sentinel_aug_config.get("hflip_prob", 0.5),
                     sentinel_aug_config.get("vflip_prob", 0.5),
                     sentinel_aug_config.get("rotation_prob", 0.5),
+                    sentinel_aug_config.get("channel_dropout_prob", 0.0),
+                    sentinel_aug_config.get("gaussian_noise_std", 0.0),
                 )
             else:
                 sentinel_augmenter = None

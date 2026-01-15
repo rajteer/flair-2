@@ -283,6 +283,9 @@ class SentinelAugmentation:
         vflip_prob: float = 0.5,
         rotation_prob: float = 0.5,
         rotation_angles: list[int] | None = None,
+        channel_dropout_prob: float = 0.0,
+        max_channels_drop: int = 2,
+        gaussian_noise_std: float = 0.0,
     ) -> None:
         """Initialize Sentinel augmentation.
 
@@ -291,12 +294,18 @@ class SentinelAugmentation:
             vflip_prob: Probability of vertical flip.
             rotation_prob: Probability of rotation.
             rotation_angles: List of rotation angles in degrees (must be 0, 90, 180, or 270).
+            channel_dropout_prob: Probability of dropping random channels (bands).
+            max_channels_drop: Maximum number of channels to drop (1-3).
+            gaussian_noise_std: Standard deviation of Gaussian noise to add (0 = disabled).
 
         """
         self.hflip_prob = hflip_prob
         self.vflip_prob = vflip_prob
         self.rotation_prob = rotation_prob
         self.rotation_angles = rotation_angles or [0, 90, 180, 270]
+        self.channel_dropout_prob = channel_dropout_prob
+        self.max_channels_drop = max_channels_drop
+        self.gaussian_noise_std = gaussian_noise_std
 
     @classmethod
     def from_config(cls, data_config: dict[str, Any]) -> "SentinelAugmentation":
@@ -392,4 +401,45 @@ class SentinelAugmentation:
             k = (angle // 90) % 4
             sentinel, mask = self._apply_rotation(sentinel, mask, k)
 
+        # Channel dropout - zero out random bands across all timesteps
+        if self.channel_dropout_prob > 0 and random.random() < self.channel_dropout_prob:
+            sentinel = self._apply_channel_dropout(sentinel)
+
+        # Gaussian noise
+        if self.gaussian_noise_std > 0:
+            sentinel = self._apply_gaussian_noise(sentinel)
+
         return sentinel, mask
+
+    def _apply_channel_dropout(self, sentinel: torch.Tensor) -> torch.Tensor:
+        """Randomly zero out 1-max_channels_drop bands across all timesteps.
+
+        Args:
+            sentinel: Tensor of shape (T, C, H, W).
+
+        Returns:
+            Tensor with some channels zeroed out.
+
+        """
+        num_channels = sentinel.shape[1]
+        n_drop = random.randint(1, min(self.max_channels_drop, num_channels - 1))
+        channels_to_drop = random.sample(range(num_channels), n_drop)
+
+        sentinel = sentinel.clone()
+        for c in channels_to_drop:
+            sentinel[:, c, :, :] = 0.0
+
+        return sentinel
+
+    def _apply_gaussian_noise(self, sentinel: torch.Tensor) -> torch.Tensor:
+        """Add Gaussian noise to all channels.
+
+        Args:
+            sentinel: Tensor of shape (T, C, H, W).
+
+        Returns:
+            Tensor with added noise.
+
+        """
+        noise = torch.randn_like(sentinel) * self.gaussian_noise_std
+        return sentinel + noise
