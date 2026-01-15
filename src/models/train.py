@@ -166,16 +166,17 @@ def _train_epoch_temporal(
     scheduler: LRScheduler | None = None,
     output_size: int | None = None,
     gradient_clip_val: float | None = None,
+    sentinel_augmenter: Any | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
     Temporal models receive batch_positions and pad_mask arguments.
-    Note: Augmentations are not supported for temporal (5D) data.
 
     Args:
         scheduler: Optional step-level scheduler (e.g., OneCycleLR). If provided,
             scheduler.step() is called after each optimizer step.
         gradient_clip_val: If provided, clip gradients to this max norm.
+        sentinel_augmenter: Optional SentinelAugmentation instance for geometric augmentations.
 
     """
     model.train()
@@ -196,6 +197,18 @@ def _train_epoch_temporal(
         y = batch_data[BATCH_INDEX_TARGETS].to(device)
         pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
+
+        # Apply sentinel augmentation if configured
+        if sentinel_augmenter is not None:
+            batch_size = x.size(0)
+            aug_x_list = []
+            aug_y_list = []
+            for i in range(batch_size):
+                aug_x, aug_y = sentinel_augmenter(x[i], y[i])
+                aug_x_list.append(aug_x)
+                aug_y_list.append(aug_y)
+            x = torch.stack(aug_x_list)
+            y = torch.stack(aug_y_list)
 
         optimizer.zero_grad()
         if _USE_NEW_AMP_API:
@@ -411,6 +424,7 @@ def train(
     pruning_callback: Any | None = None,
     output_size: int | None = None,
     gradient_clip_val: float | None = None,
+    sentinel_augmenter: Any | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -511,6 +525,7 @@ def train(
                 step_scheduler,
                 output_size,
                 gradient_clip_val,
+                sentinel_augmenter,
             )
         else:
             loss_epoch = train_epoch_fn(

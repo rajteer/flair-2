@@ -14,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.dataset_utils import pad_collate_sentinel
+from src.data.pre_processing.data_augmentation import SentinelAugmentation
 from src.data.pre_processing.flair_sentinel_dataset import FlairSentinelDataset
 from src.models.model_builder import (
     build_loss_function,
@@ -148,7 +149,7 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("data_type", "sentinel_2_only")
 
             sentinel_patch_size = config["data"]["sentinel_patch_size"]
-            pad_value = config["data"].get("pad_value", -1)
+            pad_value = config["data"].get("pad_value", -100)
             output_size = sentinel_patch_size
 
             model_type = config["model"]["model_type"].upper()
@@ -168,6 +169,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
                 date_encoding_mode=date_encoding_mode,
+                downsample_masks=config["data"].get("downsample_masks", True),
             )
 
             train_dataset = FlairSentinelDataset(
@@ -184,6 +186,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
                 date_encoding_mode=date_encoding_mode,
+                downsample_masks=config["data"].get("downsample_masks", True),
             )
 
             logger.info(
@@ -214,6 +217,7 @@ class SentinelTrainEvalPipeline:
                 sentinel_mean=config["data"].get("sentinel_mean"),
                 sentinel_std=config["data"].get("sentinel_std"),
                 date_encoding_mode=date_encoding_mode,
+                downsample_masks=config["data"].get("downsample_masks", True),
             )
 
             generator = create_generator(seed)
@@ -304,6 +308,24 @@ class SentinelTrainEvalPipeline:
 
             logger.info("Starting training Sentinel-2 model %s", config["model"]["model_type"])
 
+            # Create sentinel augmenter if configured
+            sentinel_aug_config = config.get("data", {}).get("sentinel_augmentation", {})
+            if sentinel_aug_config.get("enabled", False):
+                sentinel_augmenter = SentinelAugmentation(
+                    hflip_prob=sentinel_aug_config.get("hflip_prob", 0.5),
+                    vflip_prob=sentinel_aug_config.get("vflip_prob", 0.5),
+                    rotation_prob=sentinel_aug_config.get("rotation_prob", 0.5),
+                    rotation_angles=sentinel_aug_config.get("rotation_angles", [0, 90, 180, 270]),
+                )
+                logger.info(
+                    "Sentinel augmentation enabled (hflip=%.1f, vflip=%.1f, rot=%.1f)",
+                    sentinel_aug_config.get("hflip_prob", 0.5),
+                    sentinel_aug_config.get("vflip_prob", 0.5),
+                    sentinel_aug_config.get("rotation_prob", 0.5),
+                )
+            else:
+                sentinel_augmenter = None
+
             metrics = train(
                 model=model,
                 train_loader=train_loader,
@@ -331,6 +353,7 @@ class SentinelTrainEvalPipeline:
                 pruning_callback=pruning_callback,
                 output_size=output_size,
                 gradient_clip_val=config["training"].get("gradient_clip_val"),
+                sentinel_augmenter=sentinel_augmenter,
             )
 
             logger.info("Training finished. Evaluating the model...")

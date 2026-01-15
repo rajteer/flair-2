@@ -264,3 +264,132 @@ class FlairAugmentation:
                 out_masks.append(msk)
             return torch.stack(out_images), torch.stack(out_masks)
         return self.apply_flair_augmentations(images, masks)
+
+
+class SentinelAugmentation:
+    """Apply geometric augmentations to temporal Sentinel satellite imagery.
+
+    Applies the same geometric transform consistently across all timesteps
+    to preserve temporal coherence. Supports horizontal/vertical flip and
+    90-degree rotations.
+
+    Sentinel data shape: (T, C, H, W) where T is number of timesteps.
+    Mask shape: (H, W) or (512, 512) for full resolution.
+    """
+
+    def __init__(
+        self,
+        hflip_prob: float = 0.5,
+        vflip_prob: float = 0.5,
+        rotation_prob: float = 0.5,
+        rotation_angles: list[int] | None = None,
+    ) -> None:
+        """Initialize Sentinel augmentation.
+
+        Args:
+            hflip_prob: Probability of horizontal flip.
+            vflip_prob: Probability of vertical flip.
+            rotation_prob: Probability of rotation.
+            rotation_angles: List of rotation angles in degrees (must be 0, 90, 180, or 270).
+
+        """
+        self.hflip_prob = hflip_prob
+        self.vflip_prob = vflip_prob
+        self.rotation_prob = rotation_prob
+        self.rotation_angles = rotation_angles or [0, 90, 180, 270]
+
+    @classmethod
+    def from_config(cls, data_config: dict[str, Any]) -> "SentinelAugmentation":
+        """Create SentinelAugmentation from data config.
+
+        Args:
+            data_config: Data configuration dict containing sentinel_augmentation section.
+
+        Returns:
+            Configured SentinelAugmentation instance.
+
+        """
+        aug_config = data_config.get("sentinel_augmentation", {})
+        return cls(
+            hflip_prob=aug_config.get("hflip_prob", 0.5),
+            vflip_prob=aug_config.get("vflip_prob", 0.5),
+            rotation_prob=aug_config.get("rotation_prob", 0.5),
+            rotation_angles=aug_config.get("rotation_angles", [0, 90, 180, 270]),
+        )
+
+    def _apply_hflip(
+        self,
+        sentinel: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply horizontal flip to all timesteps and mask."""
+        # Sentinel: (T, C, H, W) -> flip on last dim (W)
+        sentinel = torch.flip(sentinel, dims=[-1])
+        # Mask: (H, W) or larger -> flip on last dim
+        mask = torch.flip(mask, dims=[-1])
+        return sentinel, mask
+
+    def _apply_vflip(
+        self,
+        sentinel: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply vertical flip to all timesteps and mask."""
+        # Sentinel: (T, C, H, W) -> flip on second-to-last dim (H)
+        sentinel = torch.flip(sentinel, dims=[-2])
+        # Mask: (H, W) -> flip on second-to-last dim
+        mask = torch.flip(mask, dims=[-2])
+        return sentinel, mask
+
+    def _apply_rotation(
+        self,
+        sentinel: torch.Tensor,
+        mask: torch.Tensor,
+        k: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply k*90 degree rotation to all timesteps and mask.
+
+        Args:
+            sentinel: Tensor of shape (T, C, H, W).
+            mask: Tensor of shape (H, W).
+            k: Number of 90-degree rotations (0, 1, 2, or 3).
+
+        """
+        if k == 0:
+            return sentinel, mask
+
+        # Rotate each timestep
+        sentinel = torch.rot90(sentinel, k=k, dims=(-2, -1))
+        mask = torch.rot90(mask, k=k, dims=(-2, -1))
+        return sentinel, mask
+
+    def __call__(
+        self,
+        sentinel: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply random geometric augmentations to sentinel data and mask.
+
+        Args:
+            sentinel: Tensor of shape (T, C, H, W).
+            mask: Tensor of shape (H, W).
+
+        Returns:
+            Tuple of (augmented_sentinel, augmented_mask).
+
+        """
+        sentinel = sentinel.contiguous()
+        mask = mask.contiguous()
+
+        if random.random() < self.hflip_prob:
+            sentinel, mask = self._apply_hflip(sentinel, mask)
+
+        if random.random() < self.vflip_prob:
+            sentinel, mask = self._apply_vflip(sentinel, mask)
+
+        if random.random() < self.rotation_prob:
+            angle = random.choice(self.rotation_angles)
+            k = (angle // 90) % 4
+            sentinel, mask = self._apply_rotation(sentinel, mask, k)
+
+        return sentinel, mask

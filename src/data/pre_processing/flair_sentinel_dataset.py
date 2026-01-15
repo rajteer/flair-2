@@ -53,6 +53,7 @@ class FlairSentinelDataset(Dataset):
         sentinel_mean: list[float] | None = None,
         sentinel_std: list[float] | None = None,
         date_encoding_mode: str = "days",
+        downsample_masks: bool = True,
     ) -> None:
         """Initialize the Sentinel-only FLAIR-2 dataset.
 
@@ -103,6 +104,7 @@ class FlairSentinelDataset(Dataset):
             self.sentinel_std = None
 
         self.date_encoding_mode = date_encoding_mode
+        self.downsample_masks = downsample_masks
 
         self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
@@ -179,13 +181,16 @@ class FlairSentinelDataset(Dataset):
         mask = tifffile.imread(label_path)
         mask = np.where(mask <= MAX_ORIGINAL_CLASS, mask, OTHER_CLASS)
         mask -= 1
-        mask_tensor = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0)
-        mask_tensor = torch.nn.functional.interpolate(
-            mask_tensor,
-            size=(self.sentinel_patch_size, self.sentinel_patch_size),
-            mode="nearest",
-        )
-        mask = mask_tensor.squeeze().long()
+        if self.downsample_masks:
+            mask_tensor = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0)
+            mask_tensor = torch.nn.functional.interpolate(
+                mask_tensor,
+                size=(self.sentinel_patch_size, self.sentinel_patch_size),
+                mode="nearest",
+            )
+            mask = mask_tensor.squeeze().long()
+        else:
+            mask = torch.from_numpy(mask.copy()).long()
 
         return sentinel_data, mask, sample_id, month_positions
 
