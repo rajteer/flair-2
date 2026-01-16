@@ -18,6 +18,7 @@ except ImportError as e:
     load_pretrained_ckpt = None
     RS3MAMBA_IMPORT_ERROR = e
 from src.models.tsvit import TSViT
+from src.models.tsvit_lookup import TSViTLookup
 from src.models.unetformer import UNetFormer
 
 
@@ -131,6 +132,67 @@ def build_model(
             in_channels=in_channels,
             num_classes=n_classes,
             max_seq_len=int(max_seq_len),
+            dim=int(dim),
+            temporal_depth=int(tsvit_config.get("temporal_depth", depth_fallback)),
+            spatial_depth=int(tsvit_config.get("spatial_depth", depth_fallback)),
+            num_heads=int(tsvit_config.get("num_heads", 4)),
+            mlp_dim=int(mlp_dim),
+            dropout=float(tsvit_config.get("dropout", 0.0)),
+            emb_dropout=float(tsvit_config.get("emb_dropout", 0.0)),
+            temporal_metadata_channels=int(tsvit_config.get("temporal_metadata_channels", 0)),
+        )
+
+    if model_type.upper() == "TSVIT_LOOKUP":
+        tsvit_config = model_config or {}
+
+        image_size = tsvit_config.get("image_size", tsvit_config.get("img_res"))
+        patch_size = tsvit_config.get("patch_size")
+        dim = tsvit_config.get("dim")
+
+        missing = [
+            key
+            for key, value in {
+                "image_size": image_size,
+                "patch_size": patch_size,
+                "dim": dim,
+            }.items()
+            if value is None
+        ]
+        if missing:
+            msg = f"Missing TSViTLookup config keys: {', '.join(missing)}"
+            raise ValueError(msg)
+
+        depth_fallback = tsvit_config.get("depth", 4)
+        mlp_dim = tsvit_config.get(
+            "mlp_dim",
+            tsvit_config.get("scale_dim", 4) * dim,
+        )
+
+        # Handle train_dates configuration (0-indexed to match dataset output)
+        train_dates_cfg = tsvit_config.get("train_dates", "months")
+        if train_dates_cfg == "months":
+            train_dates = list(range(0, 12))  # 0-11 for months (0-indexed)
+            date_range = (0, 11)
+        elif train_dates_cfg == "days":
+            train_dates = list(range(0, 365))  # 0-364 for day-of-year (0-indexed)
+            date_range = (0, 364)
+        elif isinstance(train_dates_cfg, list):
+            train_dates = train_dates_cfg
+            date_range = tsvit_config.get("date_range", (min(train_dates), max(train_dates)))
+        else:
+            msg = f"train_dates must be 'months', 'days', or a list. Got: {train_dates_cfg}"
+            raise ValueError(msg)
+
+        # Allow override of date_range from config
+        date_range = tsvit_config.get("date_range", date_range)
+
+        return TSViTLookup(
+            image_size=int(image_size),
+            patch_size=int(patch_size),
+            in_channels=in_channels,
+            num_classes=n_classes,
+            train_dates=train_dates,
+            date_range=tuple(date_range),
             dim=int(dim),
             temporal_depth=int(tsvit_config.get("temporal_depth", depth_fallback)),
             spatial_depth=int(tsvit_config.get("spatial_depth", depth_fallback)),
@@ -305,7 +367,7 @@ def build_lr_scheduler(
     scheduler_type = scheduler_config.get("type")
     if scheduler_type is None:
         return None
-    
+
     scheduler_args = dict(scheduler_config.get("args", {}))
 
     # OneCycleLR requires steps_per_epoch and epochs

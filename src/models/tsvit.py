@@ -11,8 +11,6 @@ sentinel stacks produced by this repository.
 
 from __future__ import annotations
 
-import math
-
 import torch
 from einops import repeat
 from einops.layers.torch import Rearrange
@@ -33,7 +31,6 @@ class MultiHeadSelfAttention(nn.Module):
 
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = 1.0 / math.sqrt(self.head_dim)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=False)
         self.proj = nn.Sequential(nn.Linear(dim, dim), nn.Dropout(dropout))
@@ -57,25 +54,29 @@ class MultiHeadSelfAttention(nn.Module):
         batch, seq_len, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
 
-        def _reshape(t: torch.Tensor) -> torch.Tensor:
-            return (
-                t.view(batch, seq_len, self.num_heads, self.head_dim)
-                .permute(0, 2, 1, 3)
-                .contiguous()
-            )
+        # Reshape to (batch, num_heads, seq_len, head_dim)
+        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        q = _reshape(q)
-        k = _reshape(k)
-        v = _reshape(v)
-
-        scores = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale
+        # Convert key_padding_mask to attention mask format for SDPA
+        # SDPA expects: True = attend, False = ignore (opposite of key_padding_mask)
+        attn_mask = None
         if key_padding_mask is not None:
-            mask = key_padding_mask.unsqueeze(1).unsqueeze(2)  # B x 1 x 1 x S
-            scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
+            # Expand to (batch, 1, 1, seq_len) for broadcasting
+            attn_mask = ~key_padding_mask.unsqueeze(1).unsqueeze(2)
 
-        attn = scores.softmax(dim=-1)
-        out = torch.einsum("bhij,bhjd->bhid", attn, v)
-        out = out.permute(0, 2, 1, 3).reshape(batch, seq_len, -1)
+        # Use PyTorch's fused scaled_dot_product_attention (FlashAttention when available)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+        )
+
+        out = out.transpose(1, 2).reshape(batch, seq_len, -1)
         return self.proj(out)
 
 
