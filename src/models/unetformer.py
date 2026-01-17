@@ -10,6 +10,8 @@ https://arxiv.org/abs/2109.08937
 
 from __future__ import annotations
 
+from typing import Any
+
 import timm
 import torch
 from torch import nn
@@ -23,6 +25,11 @@ from src.models.common_blocks import (
     ConvBNReLU,
     FeatureRefinementHead,
 )
+
+try:
+    from src.models.samba_encoder import SambaEncoder
+except ImportError:
+    SambaEncoder = None  # type: ignore[misc, assignment]
 
 
 class AuxHead(nn.Module):
@@ -114,8 +121,8 @@ class Decoder(nn.Module):
 class UNetFormer(nn.Module):
     """UNetFormer: A UNet-like Transformer for Semantic Segmentation.
 
-    This model uses a CNN backbone (from timm) for feature extraction and
-    a transformer-style decoder with Global-Local Attention.
+    This model uses a CNN backbone (from timm) or Samba encoder for feature
+    extraction and a transformer-style decoder with Global-Local Attention.
 
     Args:
         decode_channels: Number of decoder channels. Default: 64
@@ -126,6 +133,8 @@ class UNetFormer(nn.Module):
         num_classes: Number of output classes. Default: 6
         in_channels: Number of input channels. Default: 3
         use_aux_head: Whether to use auxiliary head for deep supervision. Default: False
+        encoder_type: Type of encoder: 'timm' or 'samba'. Default: 'timm'
+        samba_config: Configuration dict for Samba encoder when encoder_type='samba'
 
     """
 
@@ -140,26 +149,45 @@ class UNetFormer(nn.Module):
         in_channels: int = 3,
         *,
         use_aux_head: bool = False,
+        encoder_type: str = "timm",
+        samba_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self.use_aux_head = use_aux_head
+        self.encoder_type = encoder_type
 
-        # Select out_indices based on encoder architecture
-        # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
-        backbone_lower = backbone_name.lower()
-        if "convnext" in backbone_lower or "swin" in backbone_lower:
-            out_indices = (0, 1, 2, 3)
+        if encoder_type == "samba":
+            if SambaEncoder is None:
+                msg = "SambaEncoder could not be imported. Check dependencies (e.g. mamba_ssm)."
+                raise ImportError(msg)
+
+            samba_config = samba_config or {}
+            self.backbone = SambaEncoder(
+                in_channels=in_channels,
+                stem_hidden_dim=samba_config.get("stem_hidden_dim", 32),
+                embed_dims=samba_config.get("embed_dims", [64, 128, 320, 448]),
+                mlp_ratios=samba_config.get("mlp_ratios", [8, 8, 4, 4]),
+                drop_path_rate=samba_config.get("drop_path_rate", 0.0),
+                depths=samba_config.get("depths", [3, 4, 6, 3]),
+            )
+            encoder_channels = self.backbone.get_channels()
         else:
-            out_indices = (1, 2, 3, 4)
+            # Select out_indices based on encoder architecture
+            # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
+            backbone_lower = backbone_name.lower()
+            if "convnext" in backbone_lower or "swin" in backbone_lower:
+                out_indices = (0, 1, 2, 3)
+            else:
+                out_indices = (1, 2, 3, 4)
 
-        self.backbone = timm.create_model(
-            backbone_name,
-            features_only=True,
-            out_indices=out_indices,
-            pretrained=pretrained,
-            in_chans=in_channels,
-        )
-        encoder_channels = self.backbone.feature_info.channels()
+            self.backbone = timm.create_model(
+                backbone_name,
+                features_only=True,
+                out_indices=out_indices,
+                pretrained=pretrained,
+                in_chans=in_channels,
+            )
+            encoder_channels = self.backbone.feature_info.channels()
 
         self.decoder = Decoder(
             encoder_channels,
