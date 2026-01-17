@@ -79,11 +79,6 @@ class FlairSentinelDataset(Dataset):
                 If provided with sentinel_std, applies (x - mean) / std normalization.
             sentinel_std: Per-channel stds for z-score normalization (after scale_factor).
                 If provided with sentinel_mean, applies (x - mean) / std normalization.
-            sentinel_std: Optional per-band std for z-score standardization.
-                If provided (e.g., 512), bilinearly upsamples Sentinel patches from their
-                native resolution to this size to match aerial/mask resolution.
-                This follows the FLAIR-2 paper approach for satellite-only training.
-                If None, no upsampling is performed.
 
         """
         self.mask_dir = Path(mask_dir)

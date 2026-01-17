@@ -168,8 +168,8 @@ def build_model(
             tsvit_config.get("scale_dim", 4) * dim,
         )
 
-        # Handle train_dates configuration (0-indexed to match dataset output)
-        train_dates_cfg = tsvit_config.get("train_dates", "months")
+        # Handle train_dates configuration (use days by default for fine-grained embeddings)
+        train_dates_cfg = tsvit_config.get("train_dates", "days")
         if train_dates_cfg == "months":
             train_dates = list(range(0, 12))  # 0-11 for months (0-indexed)
             date_range = (0, 11)

@@ -274,6 +274,8 @@ class SentinelTrainEvalPipeline:
             model_config = config["model"].get("model_config", {})
             if model_type == "UTAE":
                 model_config = {**model_config, "pad_value": pad_value}
+            elif model_type in ("TSVIT", "TSVIT_LOOKUP"):
+                model_config = {**config["model"], **model_config}
 
             model = build_model(
                 model_type=config["model"]["model_type"],
