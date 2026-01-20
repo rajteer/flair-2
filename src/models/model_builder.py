@@ -19,6 +19,7 @@ except ImportError as e:
     RS3MAMBA_IMPORT_ERROR = e
 from src.models.tsvit import TSViT
 from src.models.unetformer import UNetFormer
+from src.models.multimodal_fusion import MultimodalLateFusion, load_pretrained_multimodal
 
 
 def build_model(
@@ -167,6 +168,59 @@ def build_model(
         # Store aux_loss_weight as model attribute for training loop access
         model.aux_loss_weight = unetformer_config.get("aux_loss_weight", 0.4)
         return model
+
+    if model_type.upper() == "MULTIMODALLATEFUSION":
+        multimodal_config = model_config or {}
+
+        # Build aerial model (UNetFormer by default)
+        aerial_model_type = multimodal_config.get("aerial_model_type", "UNetFormer")
+        aerial_model_config = multimodal_config.get("aerial_model_config", {})
+        aerial_in_channels = multimodal_config.get("aerial_in_channels", in_channels)
+
+        aerial_model = build_model(
+            model_type=aerial_model_type,
+            encoder_name=aerial_model_config.get("backbone_name", encoder_name),
+            in_channels=aerial_in_channels,
+            n_classes=n_classes,
+            encoder_weights=encoder_weights,
+            model_config=aerial_model_config,
+        )
+
+        # Build Sentinel model (TSViT by default)
+        sentinel_model_type = multimodal_config.get("sentinel_model_type", "TSVIT")
+        sentinel_model_config = multimodal_config.get("sentinel_model_config", {})
+        sentinel_in_channels = multimodal_config.get("sentinel_in_channels", 10)
+
+        sentinel_model = build_model(
+            model_type=sentinel_model_type,
+            encoder_name="",
+            in_channels=sentinel_in_channels,
+            n_classes=n_classes,
+            model_config=sentinel_model_config,
+        )
+
+        # Load pre-trained checkpoints if provided
+        aerial_checkpoint = multimodal_config.get("aerial_checkpoint")
+        sentinel_checkpoint = multimodal_config.get("sentinel_checkpoint")
+
+        if aerial_checkpoint or sentinel_checkpoint:
+            aerial_model, sentinel_model = load_pretrained_multimodal(
+                aerial_checkpoint=aerial_checkpoint,
+                sentinel_checkpoint=sentinel_checkpoint,
+                aerial_model=aerial_model,
+                sentinel_model=sentinel_model,
+            )
+
+        return MultimodalLateFusion(
+            aerial_model=aerial_model,
+            sentinel_model=sentinel_model,
+            num_classes=n_classes,
+            freeze_encoders=multimodal_config.get("freeze_encoders", True),
+            fusion_mode=multimodal_config.get("fusion_mode", "weighted"),
+            aerial_resolution=tuple(multimodal_config.get("aerial_resolution", [512, 512])),
+            sentinel_resolution=tuple(multimodal_config.get("sentinel_resolution", [10, 10])),
+            use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
+        )
 
     try:
         model_class = getattr(smp, model_type)

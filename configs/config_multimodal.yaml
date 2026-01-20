@@ -1,0 +1,136 @@
+# Configuration for multimodal late fusion experiments
+# Combines pre-trained UNetFormer (aerial) and TSViT (Sentinel-2)
+
+data:
+  train:
+    images: /path/to/flair_2_aerial_train
+    masks: /path/to/flair_2_labels_train
+    sentinel: /path/to/flair_2_sen_train
+  val:
+    images: /path/to/flair_2_aerial_test
+    masks: /path/to/flair_2_labels_test
+    sentinel: /path/to/flair_2_sen_test
+  test:
+    images: /path/to/flair_2_aerial_test
+    masks: /path/to/flair_2_labels_test
+    sentinel: /path/to/flair_2_sen_test
+  
+  centroids_path: /path/to/flair-2_centroids_sp_to_patch.json
+  dataset_version: multimodal_v1
+  num_classes: 13
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  
+  # Aerial image configuration
+  selected_channels:
+    - 0  # R
+    - 1  # G
+    - 2  # B
+    - 3  # NIR
+    - 4  # Elevation
+  
+  normalization:
+    enabled: true
+    mean: [0.485, 0.456, 0.406, 0.409878, 0.068752]
+    std: [0.229, 0.224, 0.225, 0.155107, 0.118672]
+    scale_to_unit: [true, true, true, true, false]
+    elevation_range: [0.0, 255.0]
+    elevation_channel_index: 4
+  
+  # Sentinel configuration
+  sentinel_patch_size: 10
+  use_monthly_average: true
+  cloud_snow_cover_threshold: 0.6
+  cloud_snow_prob_threshold: 50
+  sentinel_scale_factor: 10000.0
+  
+  other_class_index: 12
+
+model:
+  model_type: MultimodalLateFusion
+  
+  # Pre-trained checkpoint paths (update with actual paths)
+  aerial_checkpoint: null  # /path/to/unetformer_best.pth
+  sentinel_checkpoint: null  # /path/to/tsvit_best.pth
+  
+  # Fusion settings
+  freeze_encoders: true
+  fusion_mode: weighted  # "weighted", "gated", "concat", or "average"
+  use_cloud_uncertainty: false  # Only used with fusion_mode: gated
+  
+  # Aerial model (UNetFormer) configuration
+  aerial_model_type: UNetFormer
+  aerial_in_channels: 5
+  aerial_model_config:
+    backbone_name: swsl_resnet18
+    decode_channels: 64
+    dropout: 0.1
+    window_size: 8
+    use_aux_head: false
+  
+  # Sentinel model (TSViT) configuration
+  sentinel_model_type: TSVIT
+  sentinel_in_channels: 10
+  sentinel_model_config:
+    image_size: 10
+    patch_size: 2
+    max_seq_len: 12
+    dim: 128
+    temporal_depth: 4
+    spatial_depth: 4
+    num_heads: 4
+    mlp_dim: 256
+    dropout: 0.1
+    emb_dropout: 0.1
+
+training:
+  device: cuda
+  optimizer:
+    type: AdamW
+    learning_rate: 0.001  # Higher LR since only training fusion weights
+    betas: [0.9, 0.999]
+    weight_decay: 0.0001
+  lr_scheduler:
+    type: ReduceLROnPlateau
+    args:
+      mode: min
+      factor: 0.5
+      patience: 5
+      threshold: 0.0001
+  epochs: 50
+  early_stopping_patience: 10
+  early_stopping_criterion: miou
+  loss_function:
+    type: CrossEntropyLoss
+    args:
+      ignore_index: 12
+
+experiment:
+  seed: 42
+  deterministic: true
+
+mlflow:
+  name: multimodal_fusion
+  run_name: late_fusion_weighted
+  tracking_uri: null
+  note: "Late fusion with per-class modality weights"
+  dagshub:
+    enabled: false
+    repo_owner: prajter00
+    repo_name: flair-2
+    branch: null
+
+evaluation:
+  log_confusion_matrix: true
+  log_comparison: true
+  log_sample_ids: []
+
+visualization:
+  language: en
+  labels:
+    ground_truth: Ground Truth
+    prediction: Prediction
+    predicted_class: Predicted Class
+    actual_class: Actual Class
+    confusion_matrix_title: Confusion Matrix
