@@ -141,7 +141,6 @@ class UNetFormer(nn.Module):
         else:
             out_indices = (1, 2, 3, 4)
 
-        # Track if backbone outputs channels-last (Swin, ViT) vs channels-first (CNN)
         self._is_vit_backbone = "swin" in backbone_lower or "vit" in backbone_lower
 
         self.backbone = timm.create_model(
@@ -159,7 +158,6 @@ class UNetFormer(nn.Module):
         h, w = x.size()[-2:]
         res1, res2, res3, res4 = self.backbone(x)
 
-        # Swin/ViT backbones output (B, H, W, C), convert to (B, C, H, W)
         if self._is_vit_backbone:
             res1 = res1.permute(0, 3, 1, 2).contiguous()
             res2 = res2.permute(0, 3, 1, 2).contiguous()

@@ -33,26 +33,33 @@ def compute_model_complexity(
 
         batch_positions = batch_positions.to(device)
 
+        # Create realistic pad_mask (all False = no padding, matches real inference)
+        batch_size, seq_len = input_size[0], input_size[1]
+        pad_mask = torch.zeros(batch_size, seq_len, dtype=torch.bool, device=device)
+
         try:
             dummy_input = torch.randn(*input_size, device=device)
             logger.info(
                 "Computing FLOPs for temporal model: input_size=%s, device=%s, "
-                "batch_positions.shape=%s, batch_positions.device=%s",
+                "batch_positions.shape=%s, pad_mask.shape=%s",
                 input_size,
                 device,
                 batch_positions.shape,
-                batch_positions.device,
+                pad_mask.shape,
             )
             flops, macs, params = calculate_flops(
                 model=model,
                 args=[dummy_input],
-                kwargs={"batch_positions": batch_positions},
+                kwargs={"batch_positions": batch_positions, "pad_mask": pad_mask},
                 output_as_string=False,
                 output_precision=0,
                 print_results=False,
             )
             logger.info(
-                "FLOPs calculation succeeded: flops=%s, macs=%s, params=%s", flops, macs, params,
+                "FLOPs calculation succeeded: flops=%s, macs=%s, params=%s",
+                flops,
+                macs,
+                params,
             )
         except Exception as e:
             logger.warning("Failed to compute FLOPs for temporal model: %s", e, exc_info=True)
