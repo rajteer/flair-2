@@ -319,28 +319,83 @@ def _replace_batchnorm_with_groupnorm(
             _replace_batchnorm_with_groupnorm(child, num_groups)
 
 
+def _get_encoder_decoder_params(
+    model: nn.Module,
+) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+    """Separate model parameters into encoder and decoder groups."""
+    encoder_module = getattr(model, "backbone", None) or getattr(model, "encoder", None)
+    if encoder_module is None:
+        msg = "Model has no 'backbone' or 'encoder' attribute."
+        raise ValueError(msg)
+
+    encoder_param_ids = {id(p) for p in encoder_module.parameters()}
+    encoder_params = list(encoder_module.parameters())
+    decoder_params = [p for p in model.parameters() if id(p) not in encoder_param_ids]
+    return encoder_params, decoder_params
+
+
+def freeze_encoder(model: nn.Module) -> None:
+    """Freeze encoder parameters (set requires_grad=False)."""
+    encoder_module = getattr(model, "backbone", None) or getattr(model, "encoder", None)
+    if encoder_module is None:
+        msg = "Model has no 'backbone' or 'encoder' attribute."
+        raise ValueError(msg)
+    for param in encoder_module.parameters():
+        param.requires_grad = False
+    logger.info("Encoder frozen (%d parameters)", sum(1 for _ in encoder_module.parameters()))
+
+
+def unfreeze_encoder(model: nn.Module) -> None:
+    """Unfreeze encoder parameters (set requires_grad=True)."""
+    encoder_module = getattr(model, "backbone", None) or getattr(model, "encoder", None)
+    if encoder_module is None:
+        msg = "Model has no 'backbone' or 'encoder' attribute."
+        raise ValueError(msg)
+    for param in encoder_module.parameters():
+        param.requires_grad = True
+    logger.info("Encoder unfrozen (%d parameters)", sum(1 for _ in encoder_module.parameters()))
+
+
 def build_optimizer(
     model: nn.Module,
     optimizer_type: str,
     learning_rate: float,
     weight_decay: float = 0.0,
     betas: tuple[float, float] | None = None,
+    encoder_lr_mult: float | None = None,
 ) -> optim.Optimizer:
-    """Build and return an optimizer for the given model."""
+    """Build and return an optimizer for the given model.
+
+    Args:
+        encoder_lr_mult: Optional multiplier for encoder LR (encoder_lr = learning_rate * mult).
+
+    """
     try:
         optimizer_class = getattr(optim, optimizer_type)
     except AttributeError as err:
         msg = f"Unknown optimizer type: {optimizer_type}"
         raise ValueError(msg) from err
 
-    kwargs: dict = {
-        "lr": learning_rate,
-        "weight_decay": weight_decay,
-    }
+    kwargs: dict = {"weight_decay": weight_decay}
     if betas is not None:
         kwargs["betas"] = betas
 
-    return optimizer_class(model.parameters(), **kwargs)
+    if encoder_lr_mult is not None and encoder_lr_mult != 1.0:
+        encoder_params, decoder_params = _get_encoder_decoder_params(model)
+        encoder_lr = learning_rate * encoder_lr_mult
+        param_groups = [
+            {"params": encoder_params, "lr": encoder_lr},
+            {"params": decoder_params, "lr": learning_rate},
+        ]
+        logger.info(
+            "Differential LR: encoder=%.2e (mult=%.2f), decoder=%.2e",
+            encoder_lr,
+            encoder_lr_mult,
+            learning_rate,
+        )
+        return optimizer_class(param_groups, **kwargs)
+
+    return optimizer_class(model.parameters(), lr=learning_rate, **kwargs)
 
 
 def build_lr_scheduler(
