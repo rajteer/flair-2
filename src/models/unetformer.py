@@ -151,6 +151,7 @@ class UNetFormer(nn.Module):
         use_aux_head: bool = False,
         encoder_type: str = "timm",
         samba_config: dict[str, Any] | None = None,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.use_aux_head = use_aux_head
@@ -189,6 +190,7 @@ class UNetFormer(nn.Module):
                 out_indices=out_indices,
                 pretrained=pretrained,
                 in_chans=in_channels,
+                drop_path_rate=drop_path_rate,
             )
             encoder_channels = self.backbone.feature_info.channels()
 
