@@ -70,8 +70,8 @@ def prepare_output_for_comparison(
         outputs = outputs[
             :,
             :,
-            crop_margin_h : out_h - crop_margin_h,
-            crop_margin_w : out_w - crop_margin_w,
+            crop_margin_h : crop_margin_h + output_size,
+            crop_margin_w : crop_margin_w + output_size,
         ]
 
     # Upsample to target size

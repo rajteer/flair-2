@@ -106,7 +106,8 @@ class SentinelOptimizationPipeline:
                 for key, value in size_mapping[model_size].items():
                     update_nested_dict(config, f"model.model_config.{key}", value)
                 # Remove the helper param so it doesn't confuse the model builder
-                model_config.pop("model_size", None)
+                # Use the actual config path since model_config may be a different dict
+                config.get("model", {}).get("model_config", {}).pop("model_size", None)
 
         # -----------------------------------------------------------------
         # 2. n_head / d_model constraint: n_head=32 requires d_model=512
@@ -125,7 +126,12 @@ class SentinelOptimizationPipeline:
         max_d_k = effective_d_model // n_head
         if d_k > max_d_k:
             update_nested_dict(config, "model.model_config.d_k", max_d_k)
-            logger.info("Constraint applied: d_k=%d > d_model/n_head=%d -> clamped to %d", d_k, max_d_k, max_d_k)
+            logger.info(
+                "Constraint applied: d_k=%d > d_model/n_head=%d -> clamped to %d",
+                d_k,
+                max_d_k,
+                max_d_k,
+            )
 
     def _suggest_single_param(
         self,
