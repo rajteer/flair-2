@@ -12,6 +12,16 @@ from src.models.model_builder import (
 )
 
 
+def _mamba_available() -> bool:
+    """Check if mamba_ssm is available."""
+    try:
+        import mamba_ssm  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 class TestBuildModel:
     """Tests for build_model function."""
 
@@ -47,6 +57,63 @@ class TestBuildModel:
         )
 
         assert isinstance(model, nn.Module)
+
+    @pytest.mark.skipif(
+        not _mamba_available(),
+        reason="mamba_ssm not available",
+    )
+    def test_builds_unetformer_with_samba(self, in_channels: int, num_classes: int) -> None:
+        """Should build a UNetFormer model with Samba encoder."""
+        model = build_model(
+            model_type="UNetFormer",
+            encoder_name="",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            model_config={
+                "encoder_type": "samba",
+                "samba_config": {
+                    "embed_dims": [32, 64, 128, 256],
+                    "depths": [1, 1, 1, 1],
+                },
+            },
+        )
+
+        assert isinstance(model, nn.Module)
+        assert model.encoder_type == "samba"
+
+    @pytest.mark.skipif(
+        not _mamba_available(),
+        reason="mamba_ssm not available",
+    )
+    def test_unetformer_samba_forward_pass(
+        self,
+        in_channels: int,
+        num_classes: int,
+        batch_size: int,
+    ) -> None:
+        """UNetFormer with Samba encoder should produce correct output shape."""
+        model = build_model(
+            model_type="UNetFormer",
+            encoder_name="",
+            in_channels=in_channels,
+            n_classes=num_classes,
+            model_config={
+                "encoder_type": "samba",
+                "samba_config": {
+                    "embed_dims": [32, 64, 128, 256],
+                    "depths": [1, 1, 1, 1],
+                },
+            },
+        )
+        model.eval()
+
+        # Use smaller image size for faster testing
+        h, w = 64, 64
+        x = torch.randn(batch_size, in_channels, h, w)
+        with torch.no_grad():
+            output = model(x)
+
+        assert output.shape == (batch_size, num_classes, h, w)
 
     def test_raises_for_unknown_model(self, in_channels: int, num_classes: int) -> None:
         """Should raise ValueError for unknown model type."""

@@ -10,6 +10,8 @@ https://arxiv.org/abs/2109.08937
 
 from __future__ import annotations
 
+from typing import Any
+
 import timm
 import torch
 from torch import nn
@@ -23,6 +25,11 @@ from src.models.common_blocks import (
     ConvBNReLU,
     FeatureRefinementHead,
 )
+
+try:
+    from src.models.samba_encoder import SambaEncoder
+except ImportError:
+    SambaEncoder = None  # type: ignore[misc, assignment]
 
 
 class AuxHead(nn.Module):
@@ -81,7 +88,9 @@ class Decoder(nn.Module):
         res4: torch.Tensor,
         h: int,
         w: int,
-    ) -> torch.Tensor:
+        *,
+        return_aux_features: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         x = self.b4(self.pre_conv(res4))
         x = self.p3(x, res3)
         x = self.b3(x)
@@ -91,9 +100,14 @@ class Decoder(nn.Module):
 
         x = self.p1(x, res1)
 
+        # Store features for auxiliary head before segmentation
+        aux_features = x
+
         x = self.segmentation_head(x)
         x = functional.interpolate(x, size=(h, w), mode="bilinear", align_corners=False)
 
+        if return_aux_features:
+            return x, aux_features
         return x
 
     def init_weight(self) -> None:
@@ -107,8 +121,8 @@ class Decoder(nn.Module):
 class UNetFormer(nn.Module):
     """UNetFormer: A UNet-like Transformer for Semantic Segmentation.
 
-    This model uses a CNN backbone (from timm) for feature extraction and
-    a transformer-style decoder with Global-Local Attention.
+    This model uses a CNN backbone (from timm) or Samba encoder for feature
+    extraction and a transformer-style decoder with Global-Local Attention.
 
     Args:
         decode_channels: Number of decoder channels. Default: 64
@@ -118,6 +132,9 @@ class UNetFormer(nn.Module):
         window_size: Window size for attention. Default: 8
         num_classes: Number of output classes. Default: 6
         in_channels: Number of input channels. Default: 3
+        use_aux_head: Whether to use auxiliary head for deep supervision. Default: False
+        encoder_type: Type of encoder: 'timm' or 'samba'. Default: 'timm'
+        samba_config: Configuration dict for Samba encoder when encoder_type='samba'
 
     """
 
@@ -130,39 +147,82 @@ class UNetFormer(nn.Module):
         window_size: int = 8,
         num_classes: int = 6,
         in_channels: int = 3,
+        *,
+        use_aux_head: bool = False,
+        encoder_type: str = "timm",
+        samba_config: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
+        self.use_aux_head = use_aux_head
+        self.encoder_type = encoder_type
 
-        # Select out_indices based on encoder architecture
-        # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
-        backbone_lower = backbone_name.lower()
-        if "convnext" in backbone_lower or "swin" in backbone_lower:
-            out_indices = (0, 1, 2, 3)
+        if encoder_type == "samba":
+            if SambaEncoder is None:
+                msg = "SambaEncoder could not be imported. Check dependencies (e.g. mamba_ssm)."
+                raise ImportError(msg)
+
+            samba_config = samba_config or {}
+            self.backbone = SambaEncoder(
+                in_channels=in_channels,
+                stem_hidden_dim=samba_config.get("stem_hidden_dim", 32),
+                embed_dims=samba_config.get("embed_dims", [64, 128, 320, 448]),
+                mlp_ratios=samba_config.get("mlp_ratios", [8, 8, 4, 4]),
+                drop_path_rate=samba_config.get("drop_path_rate", 0.0),
+                depths=samba_config.get("depths", [3, 4, 6, 3]),
+            )
+            encoder_channels = self.backbone.get_channels()
+            self._is_vit_backbone = False
         else:
-            out_indices = (1, 2, 3, 4)
+            # Select out_indices based on encoder architecture
+            # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
+            backbone_lower = backbone_name.lower()
+            if "convnext" in backbone_lower or "swin" in backbone_lower:
+                out_indices = (0, 1, 2, 3)
+            else:
+                out_indices = (1, 2, 3, 4)
 
-        self._is_vit_backbone = "swin" in backbone_lower or "vit" in backbone_lower
+            self._is_vit_backbone = "swin" in backbone_lower or "vit" in backbone_lower
 
-        self.backbone = timm.create_model(
-            backbone_name,
-            features_only=True,
-            out_indices=out_indices,
-            pretrained=pretrained,
-            in_chans=in_channels,
+            self.backbone = timm.create_model(
+                backbone_name,
+                features_only=True,
+                out_indices=out_indices,
+                pretrained=pretrained,
+                in_chans=in_channels,
+            )
+            encoder_channels = self.backbone.feature_info.channels()
+
+        self.decoder = Decoder(
+            encoder_channels,
+            decode_channels,
+            dropout,
+            window_size,
+            num_classes,
         )
-        encoder_channels = self.backbone.feature_info.channels()
 
-        self.decoder = Decoder(encoder_channels, decode_channels, dropout, window_size, num_classes)
+        # Auxiliary head for deep supervision (as per paper)
+        if use_aux_head:
+            self.aux_head = AuxHead(
+                in_channels=decode_channels,
+                num_classes=num_classes,
+            )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         h, w = x.size()[-2:]
         res1, res2, res3, res4 = self.backbone(x)
 
+        # Handle ViT backbone output format (B, H, W, C) -> (B, C, H, W)
         if self._is_vit_backbone:
             res1 = res1.permute(0, 3, 1, 2).contiguous()
             res2 = res2.permute(0, 3, 1, 2).contiguous()
             res3 = res3.permute(0, 3, 1, 2).contiguous()
             res4 = res4.permute(0, 3, 1, 2).contiguous()
 
-        x = self.decoder(res1, res2, res3, res4, h, w)
-        return x
+        if self.use_aux_head and self.training:
+            main_out, aux_features = self.decoder(
+                res1, res2, res3, res4, h, w, return_aux_features=True
+            )
+            aux_out = self.aux_head(aux_features, h, w)
+            return main_out, aux_out
+
+        return self.decoder(res1, res2, res3, res4, h, w)

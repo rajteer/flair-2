@@ -232,7 +232,7 @@ def build_model(
     if model_type.upper() == "UNETFORMER":
         unetformer_config = model_config or {}
 
-        return UNetFormer(
+        model = UNetFormer(
             decode_channels=unetformer_config.get("decode_channels", 64),
             dropout=unetformer_config.get("dropout", 0.1),
             backbone_name=encoder_name or unetformer_config.get("backbone_name", "swsl_resnet18"),
@@ -240,7 +240,13 @@ def build_model(
             window_size=unetformer_config.get("window_size", 8),
             num_classes=n_classes,
             in_channels=in_channels,
+            use_aux_head=unetformer_config.get("use_aux_head", False),
+            encoder_type=unetformer_config.get("encoder_type", "timm"),
+            samba_config=unetformer_config.get("samba_config"),
         )
+        # Store aux_loss_weight as model attribute for training loop access
+        model.aux_loss_weight = unetformer_config.get("aux_loss_weight", 0.4)
+        return model
 
     try:
         model_class = getattr(smp, model_type)
@@ -428,7 +434,7 @@ def build_lr_scheduler(
     # OneCycleLR requires steps_per_epoch and epochs
     if scheduler_type == "OneCycleLR":
         if scheduler_args.get("steps_per_epoch") is None and steps_per_epoch is not None:
-            scheduler_args["steps_per_epoch"] = steps_per_epoch
+            scheduler_args["steps_per_epoch"] = steps_per_epoch + 1
         if scheduler_args.get("epochs") is None and epochs is not None:
             scheduler_args["epochs"] = epochs
 

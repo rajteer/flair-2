@@ -262,12 +262,15 @@ def _train_epoch_standard(
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
     gradient_clip_val: float | None = None,
+    aux_loss_weight: float = 0.4,
 ) -> float:
     """Train a standard (non-temporal) model for a single epoch and return average loss.
 
     Args:
         scheduler: Optional step-level scheduler (e.g., OneCycleLR). If provided,
             scheduler.step() is called after each optimizer step.
+        aux_loss_weight: Weight for auxiliary loss when model returns tuple output.
+            Default: 0.4 (as per UNetFormer paper).
 
     """
     model.train()
@@ -297,7 +300,16 @@ def _train_epoch_standard(
 
         with ctx:
             outputs = model(x)
-            loss = criterion(outputs, y)
+            # Handle auxiliary loss for models like UNetFormer
+            if isinstance(outputs, tuple):
+                main_out, aux_out = outputs
+                main_loss = criterion(main_out, y)
+                aux_loss = criterion(aux_out, y)
+                # Use model's aux_loss_weight if available, else default
+                weight = getattr(model, "aux_loss_weight", aux_loss_weight)
+                loss = main_loss + weight * aux_loss
+            else:
+                loss = criterion(outputs, y)
             loss_value = loss.item()
             loss = loss / accumulation_steps
 
