@@ -7,6 +7,7 @@ from typing import Any
 
 import mlflow
 import torch
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torchinfo import summary
 from torchmetrics.classification import MulticlassJaccardIndex
@@ -36,6 +37,55 @@ BATCH_INDEX_SAMPLE_IDS = 3
 BATCH_INDEX_POSITIONS = 4
 
 
+def prepare_output_for_comparison(
+    outputs: torch.Tensor,
+    target_size: tuple[int, int],
+    output_size: int | None = None,
+) -> torch.Tensor:
+    """Prepare model outputs for comparison with target mask.
+
+    When using context window (model output larger than output_size), center-crops
+    to output_size first, then upsamples to target_size.
+
+    Args:
+        outputs: Model predictions with shape (B, C, H, W)
+        target_size: Target spatial size (height, width) to match mask
+        output_size: Expected output spatial size for center-cropping.
+            If provided and output is larger, center-crops to this size.
+            Use sentinel_patch_size when using context window.
+
+    Returns:
+        Tensor with shape (B, C, target_size[0], target_size[1])
+
+    """
+    if outputs.shape[-2:] == target_size:
+        return outputs
+
+    out_h, out_w = outputs.shape[-2:]
+
+    # Center-crop if using context window
+    if output_size is not None and out_h > output_size:
+        crop_margin_h = (out_h - output_size) // 2
+        crop_margin_w = (out_w - output_size) // 2
+        outputs = outputs[
+            :,
+            :,
+            crop_margin_h : crop_margin_h + output_size,
+            crop_margin_w : crop_margin_w + output_size,
+        ]
+
+    # Upsample to target size
+    if outputs.shape[-2:] != target_size:
+        outputs = F.interpolate(
+            outputs,
+            size=target_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    return outputs
+
+
 def _log_model_description(
     model: torch.nn.Module,
     device: torch.device,
@@ -43,53 +93,56 @@ def _log_model_description(
     sample_inputs: torch.Tensor | None = None,
     batch_positions: torch.Tensor | None = None,
 ) -> None:
-    """Create and log model stats."""
-    model_info = ""
+    """Create and log model stats. Failures are logged but don't raise."""
+    try:
+        model_info = ""
 
-    summary_kwargs: dict[str, Any] = {
-        "model": model,
-        "device": str(device),
-        "verbose": 0,
-        "col_names": [
-            "input_size",
-            "output_size",
-            "num_params",
-            "kernel_size",
-            "mult_adds",
-        ],
-        "row_settings": ["var_names"],
-    }
+        summary_kwargs: dict[str, Any] = {
+            "model": model,
+            "device": str(device),
+            "verbose": 0,
+            "col_names": [
+                "input_size",
+                "output_size",
+                "num_params",
+                "kernel_size",
+                "mult_adds",
+            ],
+            "row_settings": ["var_names"],
+        }
 
-    if sample_inputs is not None:
-        summary_kwargs["input_data"] = sample_inputs
-        if sample_inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-            summary_kwargs["batch_positions"] = batch_positions
-    else:
-        summary_kwargs["input_size"] = sample_input_shape
+        if sample_inputs is not None:
+            summary_kwargs["input_data"] = sample_inputs
+            if sample_inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
+                summary_kwargs["batch_positions"] = batch_positions
+        else:
+            summary_kwargs["input_size"] = sample_input_shape
 
-    with io.StringIO() as buf:
-        model_summary = summary(**summary_kwargs)
-        print(model_summary, file=buf)
-        model_info = buf.getvalue()
+        with io.StringIO() as buf:
+            model_summary = summary(**summary_kwargs)
+            print(model_summary, file=buf)
+            model_info = buf.getvalue()
 
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".txt",
-        delete=False,
-        encoding="utf-8",
-    ) as tmp:
-        tmp.write(model_info)
-        tmp_path = tmp.name
-    mlflow.log_artifact(tmp_path, "model_architecture")
-    Path(tmp_path).unlink()
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".txt",
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp.write(model_info)
+            tmp_path = tmp.name
+        mlflow.log_artifact(tmp_path, "model_architecture")
+        Path(tmp_path).unlink()
 
-    complexity = compute_model_complexity(
-        model=model,
-        input_size=sample_input_shape,
-        batch_positions=batch_positions,
-    )
-    for k, v in complexity.items():
-        mlflow.log_metric(k, float(v))
+        complexity = compute_model_complexity(
+            model=model,
+            input_size=sample_input_shape,
+            batch_positions=batch_positions,
+        )
+        for k, v in complexity.items():
+            mlflow.log_metric(k, float(v))
+    except Exception:
+        logger.warning("Failed to log model description (non-fatal)", exc_info=True)
 
 
 def _get_sample_batch(
@@ -111,16 +164,19 @@ def _train_epoch_temporal(
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
-    max_grad_norm: float | None = None,
+    output_size: int | None = None,
+    gradient_clip_val: float | None = None,
+    sentinel_augmenter: Any | None = None,
 ) -> float:
     """Train a temporal model for a single epoch and return average loss.
 
     Temporal models receive batch_positions and pad_mask arguments.
-    Note: Augmentations are not supported for temporal (5D) data.
 
     Args:
         scheduler: Optional step-level scheduler (e.g., OneCycleLR). If provided,
             scheduler.step() is called after each optimizer step.
+        gradient_clip_val: If provided, clip gradients to this max norm.
+        sentinel_augmenter: Optional SentinelAugmentation instance for geometric augmentations.
 
     """
     model.train()
@@ -142,6 +198,18 @@ def _train_epoch_temporal(
         pad_mask = batch_data[BATCH_INDEX_PAD_MASK].to(device)
         batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
 
+        # Apply sentinel augmentation if configured
+        if sentinel_augmenter is not None:
+            batch_size = x.size(0)
+            aug_x_list = []
+            aug_y_list = []
+            for i in range(batch_size):
+                aug_x, aug_y = sentinel_augmenter(x[i], y[i])
+                aug_x_list.append(aug_x)
+                aug_y_list.append(aug_y)
+            x = torch.stack(aug_x_list)
+            y = torch.stack(aug_y_list)
+
         optimizer.zero_grad()
         if _USE_NEW_AMP_API:
             ctx = autocast(device_type=device.type, enabled=use_amp)
@@ -151,12 +219,15 @@ def _train_epoch_temporal(
         if supports_pad_mask:
             with ctx:
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
+                # Prepare outputs for loss (center-crop + upsample if using context window)
+                outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
                 loss = criterion(outputs, y)
                 loss_value = loss.item()
                 loss = loss / accumulation_steps
         else:
             with ctx:
                 outputs = model(x, batch_positions=batch_positions)
+                outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
                 loss = criterion(outputs, y)
                 loss_value = loss.item()
                 loss = loss / accumulation_steps
@@ -164,9 +235,9 @@ def _train_epoch_temporal(
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
-            if max_grad_norm is not None:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.unscale_(optimizer)
+            if gradient_clip_val is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_val)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -190,7 +261,7 @@ def _train_epoch_standard(
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
-    max_grad_norm: float | None = None,
+    gradient_clip_val: float | None = None,
     aux_loss_weight: float = 0.4,
 ) -> float:
     """Train a standard (non-temporal) model for a single epoch and return average loss.
@@ -229,7 +300,7 @@ def _train_epoch_standard(
 
         with ctx:
             outputs = model(x)
-            # Handle auxiliary outputs (e.g., from UNetFormer with aux_head)
+            # Handle auxiliary loss for models like UNetFormer
             if isinstance(outputs, tuple):
                 main_out, aux_out = outputs
                 main_loss = criterion(main_out, y)
@@ -245,9 +316,9 @@ def _train_epoch_standard(
         scaler.scale(loss).backward()
 
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
-            if max_grad_norm is not None:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.unscale_(optimizer)
+            if gradient_clip_val is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_val)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -267,10 +338,15 @@ def _validate_epoch_temporal(
     device: torch.device,
     num_classes: int,
     ignore_index: int | None = None,
+    output_size: int | None = None,
 ) -> tuple[float, float]:
     """Validate a temporal model for a single epoch and return average loss and mIoU.
 
     Temporal models receive batch_positions and pad_mask arguments.
+
+    Args:
+        output_size: Expected output spatial size for center-cropping when using context window.
+
     """
     model.eval()
     val_loss = 0.0
@@ -294,6 +370,8 @@ def _validate_epoch_temporal(
                 outputs = model(x, batch_positions=batch_positions, pad_mask=pad_mask)
             else:
                 outputs = model(x, batch_positions=batch_positions)
+            outputs = prepare_output_for_comparison(outputs, y.shape[-2:], output_size)
+
             loss = criterion(outputs, y)
             val_loss += float(loss.item())
 
@@ -356,7 +434,9 @@ def train(
     log_evaluation_metrics: bool = True,
     log_model: bool = True,
     pruning_callback: Any | None = None,
-    max_grad_norm: float | None = None,
+    output_size: int | None = None,
+    gradient_clip_val: float | None = None,
+    sentinel_augmenter: Any | None = None,
 ) -> dict[str, list[float] | float]:
     """Train a segmentation model, monitoring validation loss and saving the best model.
 
@@ -455,7 +535,9 @@ def train(
                 accumulation_steps,
                 use_amp,
                 step_scheduler,
-                max_grad_norm,
+                output_size,
+                gradient_clip_val,
+                sentinel_augmenter,
             )
         else:
             loss_epoch = train_epoch_fn(
@@ -469,7 +551,6 @@ def train(
                 accumulation_steps,
                 use_amp,
                 step_scheduler,
-                max_grad_norm,
             )
         losses_train.append(loss_epoch)
         logger.info("Epoch %d/%d: Training Loss: %.4f", epoch + 1, epochs, loss_epoch)
@@ -481,6 +562,7 @@ def train(
             device,
             num_classes,
             other_class_index,
+            output_size,
         )
         losses_val.append(val_loss)
         mious_val.append(val_miou)

@@ -279,6 +279,7 @@ class TrainEvalPipeline:
                 learning_rate=config["training"]["optimizer"]["learning_rate"],
                 weight_decay=config["training"]["optimizer"]["weight_decay"],
                 betas=config["training"]["optimizer"]["betas"],
+                encoder_lr_mult=config["training"]["optimizer"].get("encoder_lr_mult"),
             )
 
             accumulation_steps = config["training"].get("accumulation_steps", 1)

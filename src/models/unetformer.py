@@ -171,6 +171,7 @@ class UNetFormer(nn.Module):
                 depths=samba_config.get("depths", [3, 4, 6, 3]),
             )
             encoder_channels = self.backbone.get_channels()
+            self._is_vit_backbone = False
         else:
             # Select out_indices based on encoder architecture
             # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
@@ -179,6 +180,8 @@ class UNetFormer(nn.Module):
                 out_indices = (0, 1, 2, 3)
             else:
                 out_indices = (1, 2, 3, 4)
+
+            self._is_vit_backbone = "swin" in backbone_lower or "vit" in backbone_lower
 
             self.backbone = timm.create_model(
                 backbone_name,
@@ -207,6 +210,13 @@ class UNetFormer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         h, w = x.size()[-2:]
         res1, res2, res3, res4 = self.backbone(x)
+
+        # Handle ViT backbone output format (B, H, W, C) -> (B, C, H, W)
+        if self._is_vit_backbone:
+            res1 = res1.permute(0, 3, 1, 2).contiguous()
+            res2 = res2.permute(0, 3, 1, 2).contiguous()
+            res3 = res3.permute(0, 3, 1, 2).contiguous()
+            res4 = res4.permute(0, 3, 1, 2).contiguous()
 
         if self.use_aux_head and self.training:
             main_out, aux_features = self.decoder(

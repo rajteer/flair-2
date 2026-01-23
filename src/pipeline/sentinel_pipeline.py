@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.dataset_utils import pad_collate_sentinel
+from src.data.pre_processing.data_augmentation import SentinelAugmentation
 from src.data.pre_processing.flair_sentinel_dataset import FlairSentinelDataset
 from src.models.model_builder import (
     build_loss_function,
@@ -44,14 +46,25 @@ class SentinelTrainEvalPipeline:
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", run_name).strip("_") if run_name else ""
         run_suffix = f"_{safe_name}" if safe_name else ""
         logs_path: Path = Path(logs_dir).expanduser().resolve() if logs_dir else Path.cwd()
+        logs_path.mkdir(parents=True, exist_ok=True)
         self.log_file = logs_path / f"sentinel_pipeline_{timestamp}{run_suffix}.log"
 
-    def run(self, config: dict[str, Any], *, no_stdout_logs: bool = False) -> None:
+    def run(
+        self,
+        config: dict[str, Any],
+        *,
+        no_stdout_logs: bool = False,
+        pruning_callback: Any | None = None,
+    ) -> dict[str, Any]:
         """Execute the Sentinel-2 training and evaluation pipeline.
 
         Args:
             config: Configuration dictionary for the pipeline.
             no_stdout_logs: Flag to control logging to stdout. Defaults to False.
+            pruning_callback: Optional callback for Optuna pruning.
+
+        Returns:
+            Dictionary with training metrics including best_val_miou.
 
         """
         mlflow_cfg = config["mlflow"]
@@ -135,16 +148,28 @@ class SentinelTrainEvalPipeline:
             mlflow.set_tag("dataset_version", config["data"]["dataset_version"])
             mlflow.set_tag("data_type", "sentinel_2_only")
 
+            sentinel_patch_size = config["data"]["sentinel_patch_size"]
+            pad_value = config["data"].get("pad_value", -100)
+            output_size = sentinel_patch_size
+
+            model_type = config["model"]["model_type"].upper()
+            date_encoding_mode = "month" if model_type == "TSVIT" else "days"
+
             test_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["test"]["masks"],
                 sentinel_dir=config["data"]["test"]["sentinel"],
                 centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
                 sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                context_size=config["data"].get("context_size"),
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=config["data"].get("sentinel_mean"),
+                sentinel_std=config["data"].get("sentinel_std"),
+                date_encoding_mode=date_encoding_mode,
+                downsample_masks=config["data"].get("downsample_masks", True),
             )
 
             train_dataset = FlairSentinelDataset(
@@ -153,11 +178,30 @@ class SentinelTrainEvalPipeline:
                 centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
                 sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                context_size=config["data"].get("context_size"),
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=config["data"].get("sentinel_mean"),
+                sentinel_std=config["data"].get("sentinel_std"),
+                date_encoding_mode=date_encoding_mode,
+                downsample_masks=config["data"].get("downsample_masks", True),
             )
+
+            logger.info(
+                "Train dataset: %d samples (masks_dir=%s, sentinel_dir=%s)",
+                len(train_dataset),
+                config["data"]["train"]["masks"],
+                config["data"]["train"]["sentinel"],
+            )
+            if len(train_dataset) == 0:
+                raise ValueError(
+                    f"Train dataset is empty! Check paths:\n"
+                    f"  masks: {config['data']['train']['masks']}\n"
+                    f"  sentinel: {config['data']['train']['sentinel']}\n"
+                    f"  centroids: {config['data']['centroids_path']}"
+                )
 
             val_dataset = FlairSentinelDataset(
                 mask_dir=config["data"]["val"]["masks"],
@@ -165,14 +209,21 @@ class SentinelTrainEvalPipeline:
                 centroids_path=config["data"]["centroids_path"],
                 num_classes=config["data"]["num_classes"],
                 sentinel_patch_size=config["data"]["sentinel_patch_size"],
+                context_size=config["data"].get("context_size"),
                 use_monthly_average=config["data"].get("use_monthly_average", True),
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=config["data"].get("sentinel_mean"),
+                sentinel_std=config["data"].get("sentinel_std"),
+                date_encoding_mode=date_encoding_mode,
+                downsample_masks=config["data"].get("downsample_masks", True),
             )
 
             generator = create_generator(seed)
             num_workers = config["data"]["num_workers"]
+
+            collate_with_pad = partial(pad_collate_sentinel, pad_value=pad_value)
 
             train_loader = DataLoader(
                 train_dataset,
@@ -182,7 +233,7 @@ class SentinelTrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 generator=generator,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_sentinel,
+                collate_fn=collate_with_pad,
             )
 
             val_loader = DataLoader(
@@ -192,7 +243,7 @@ class SentinelTrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_sentinel,
+                collate_fn=collate_with_pad,
             )
 
             test_loader = DataLoader(
@@ -202,7 +253,7 @@ class SentinelTrainEvalPipeline:
                 num_workers=num_workers,
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
-                collate_fn=pad_collate_sentinel,
+                collate_fn=collate_with_pad,
             )
 
             criterion = build_loss_function(
@@ -220,13 +271,19 @@ class SentinelTrainEvalPipeline:
                 "Using device: %s",
                 torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU",
             )
+            model_config = config["model"].get("model_config", {})
+            if model_type == "UTAE":
+                model_config = {**model_config, "pad_value": pad_value}
+            elif model_type in ("TSVIT", "TSVIT_LOOKUP"):
+                model_config = {**config["model"], **model_config}
+
             model = build_model(
                 model_type=config["model"]["model_type"],
                 encoder_name=config["model"].get("encoder_name", ""),
                 encoder_weights=config["model"].get("encoder_weights"),
                 in_channels=config["model"]["in_channels"],
                 n_classes=config["data"]["num_classes"],
-                model_config=config["model"],
+                model_config=model_config,
             )
 
             model.to(device)
@@ -253,7 +310,30 @@ class SentinelTrainEvalPipeline:
 
             logger.info("Starting training Sentinel-2 model %s", config["model"]["model_type"])
 
-            train(
+            # Create sentinel augmenter if configured
+            sentinel_aug_config = config.get("data", {}).get("sentinel_augmentation", {})
+            if sentinel_aug_config.get("enabled", False):
+                sentinel_augmenter = SentinelAugmentation(
+                    hflip_prob=sentinel_aug_config.get("hflip_prob", 0.5),
+                    vflip_prob=sentinel_aug_config.get("vflip_prob", 0.5),
+                    rotation_prob=sentinel_aug_config.get("rotation_prob", 0.5),
+                    rotation_angles=sentinel_aug_config.get("rotation_angles", [0, 90, 180, 270]),
+                    channel_dropout_prob=sentinel_aug_config.get("channel_dropout_prob", 0.0),
+                    max_channels_drop=sentinel_aug_config.get("max_channels_drop", 2),
+                    gaussian_noise_std=sentinel_aug_config.get("gaussian_noise_std", 0.0),
+                )
+                logger.info(
+                    "Sentinel augmentation: hflip=%.1f, vflip=%.1f, rot=%.1f, ch_drop=%.1f, noise=%.2f",
+                    sentinel_aug_config.get("hflip_prob", 0.5),
+                    sentinel_aug_config.get("vflip_prob", 0.5),
+                    sentinel_aug_config.get("rotation_prob", 0.5),
+                    sentinel_aug_config.get("channel_dropout_prob", 0.0),
+                    sentinel_aug_config.get("gaussian_noise_std", 0.0),
+                )
+            else:
+                sentinel_augmenter = None
+
+            metrics = train(
                 model=model,
                 train_loader=train_loader,
                 val_loader=val_loader,
@@ -263,6 +343,24 @@ class SentinelTrainEvalPipeline:
                 device=device,
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
+                num_classes=config["data"]["num_classes"],
+                other_class_index=config["data"].get("other_class_index"),
+                accumulation_steps=accumulation_steps,
+                early_stopping_criterion=config["training"].get(
+                    "early_stopping_criterion",
+                    "loss",
+                ),
+                use_amp=bool(config["training"].get("use_amp", False)),
+                apply_augmentations=bool(
+                    config.get("data", {})
+                    .get("data_augmentation", {})
+                    .get("apply_augmentations", True)
+                ),
+                data_config=config.get("data"),
+                pruning_callback=pruning_callback,
+                output_size=output_size,
+                gradient_clip_val=config["training"].get("gradient_clip_val"),
+                sentinel_augmenter=sentinel_augmenter,
             )
 
             logger.info("Training finished. Evaluating the model...")
@@ -303,13 +401,16 @@ class SentinelTrainEvalPipeline:
                             50,
                         ),
                         sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                        sentinel_mean=config["data"].get("sentinel_mean"),
+                        sentinel_std=config["data"].get("sentinel_std"),
+                        date_encoding_mode=date_encoding_mode,
                     )
                     zone_data_loader = DataLoader(
                         zone_dataset,
                         batch_size=config["data"]["batch_size"],
                         shuffle=False,
                         num_workers=num_workers,
-                        collate_fn=pad_collate_sentinel,
+                        collate_fn=collate_with_pad,
                     )
                 else:
                     logger.warning(
@@ -322,6 +423,7 @@ class SentinelTrainEvalPipeline:
                 data_loader=test_loader,
                 num_classes=config["data"]["num_classes"],
                 other_class_index=config["data"]["other_class_index"],
+                output_size=output_size,
                 class_name_mapping=class_labels,
                 log_confusion_matrix=config["evaluation"]["log_confusion_matrix"],
                 sample_ids_to_plot=config["evaluation"]["log_sample_ids"],
@@ -339,6 +441,8 @@ class SentinelTrainEvalPipeline:
             )
 
             logger.info("Sentinel-2 pipeline completed successfully.")
+
+            return metrics
 
 
 def add_train_eval_arguments(
