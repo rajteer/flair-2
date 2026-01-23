@@ -412,7 +412,13 @@ class TSViTLookup(nn.Module):
                 )
                 raise ValueError(msg)
 
-        return self.temporal_pos_embedding[index].reshape(B, T, self.dim)
+        pos_embeddings = self.temporal_pos_embedding[index].reshape(B, T, self.dim)
+        # Ensure padding positions (negative indices) do not receive a valid date embedding
+        if not valid_mask.all():
+            valid_mask_reshaped = valid_mask.view(B, T)
+            pos_embeddings = pos_embeddings.clone()
+            pos_embeddings[~valid_mask_reshaped] = 0.0
+        return pos_embeddings
 
     def forward(
         self,
