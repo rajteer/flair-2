@@ -315,7 +315,7 @@ class TrainEvalPipeline:
                 use_amp=config["training"].get("use_amp", False),
                 log_model=config["training"].get("log_model", True),
                 pruning_callback=pruning_callback,
-                max_grad_norm=config["training"].get("max_grad_norm"),
+                gradient_clip_val=config["training"].get("max_grad_norm"),
             )
 
             logger.info("Training finished. Evaluating the model...")
