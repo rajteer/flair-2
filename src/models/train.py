@@ -575,7 +575,6 @@ def train(
             device,
             num_classes,
             other_class_index,
-            output_size,
         )
         losses_val.append(val_loss)
         mious_val.append(val_miou)
