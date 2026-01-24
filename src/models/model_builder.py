@@ -440,6 +440,15 @@ def build_lr_scheduler(
         if scheduler_args.get("epochs") is None and epochs is not None:
             scheduler_args["epochs"] = epochs
 
+    # PolynomialLR requires total_iters
+    if scheduler_type == "PolynomialLR":
+        if (
+            scheduler_args.get("total_iters") is None
+            and steps_per_epoch is not None
+            and epochs is not None
+        ):
+            scheduler_args["total_iters"] = steps_per_epoch * epochs
+
     try:
         scheduler_class = getattr(lr_schedulers, scheduler_type)
     except AttributeError as err:
