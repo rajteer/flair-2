@@ -134,10 +134,23 @@ def _log_model_description(
         mlflow.log_artifact(tmp_path, "model_architecture")
         Path(tmp_path).unlink()
 
+        # Extract canonical sequence length from temporal models for consistent FLOPs
+        # TSViT uses max_seq_len, TSViTLookup uses date_range
+        canonical_seq_len = None
+        if hasattr(model, "max_seq_len"):
+            # TSViT: max_seq_len includes padding index, use max_seq_len - 1 for actual data
+            canonical_seq_len = model.max_seq_len - 1
+            logger.info("Using canonical_seq_len=%d from model.max_seq_len", canonical_seq_len)
+        elif hasattr(model, "date_range"):
+            # TSViTLookup: date_range is (min, max), sequence length is the range size
+            canonical_seq_len = model.date_range[1] - model.date_range[0] + 1
+            logger.info("Using canonical_seq_len=%d from model.date_range", canonical_seq_len)
+
         complexity = compute_model_complexity(
             model=model,
             input_size=sample_input_shape,
             batch_positions=batch_positions,
+            canonical_seq_len=canonical_seq_len,
         )
         for k, v in complexity.items():
             mlflow.log_metric(k, float(v))

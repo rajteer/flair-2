@@ -244,6 +244,7 @@ def build_model(
             encoder_type=unetformer_config.get("encoder_type", "timm"),
             samba_config=unetformer_config.get("samba_config"),
             drop_path_rate=stochastic_depth or 0.0,
+            img_size=unetformer_config.get("img_size"),
         )
         # Store aux_loss_weight as model attribute for training loop access
         model.aux_loss_weight = unetformer_config.get("aux_loss_weight", 0.4)
