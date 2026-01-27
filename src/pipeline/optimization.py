@@ -147,6 +147,10 @@ class OptimizationPipeline:
         config["mlflow"]["run_name"] = run_name
         config["training"]["early_stopping_criterion"] = "miou"
 
+        # Check if pruning is enabled in config
+        pruning_config = self.opt_config["optimization"].get("pruning", {})
+        pruning_enabled = pruning_config.get("enabled", True)
+
         def pruning_callback(value: float, step: int) -> None:
             trial.report(value, step)
             if trial.should_prune():
@@ -161,7 +165,9 @@ class OptimizationPipeline:
             else:
                 pipeline = TrainEvalPipeline(run_name=run_name, logs_dir="logs_optuna")
 
-            metrics = pipeline.run(config, no_stdout_logs=True, pruning_callback=pruning_callback)
+            # Only pass pruning_callback if pruning is enabled
+            callback = pruning_callback if pruning_enabled else None
+            metrics = pipeline.run(config, no_stdout_logs=True, pruning_callback=callback)
             return metrics["best_val_miou"]
         except optuna.TrialPruned:
             raise
@@ -227,12 +233,32 @@ class OptimizationPipeline:
             mlflow_kwargs={"nested": True},
         )
 
+        # Configure pruner
+        pruning_config = self.opt_config["optimization"].get("pruning", {})
+        pruning_enabled = pruning_config.get("enabled", True)
+
+        if pruning_enabled:
+            n_startup_trials = pruning_config.get("n_startup_trials", 5)
+            n_warmup_steps = pruning_config.get("n_warmup_steps", 5)
+            pruner = optuna.pruners.MedianPruner(
+                n_startup_trials=n_startup_trials,
+                n_warmup_steps=n_warmup_steps,
+            )
+            logger.info(
+                "Pruning enabled: MedianPruner(n_startup_trials=%d, n_warmup_steps=%d)",
+                n_startup_trials,
+                n_warmup_steps,
+            )
+        else:
+            pruner = optuna.pruners.NopPruner()
+            logger.info("Pruning disabled: NopPruner")
+
         study = optuna.create_study(
             study_name=self.study_name,
             storage=self.storage,
             load_if_exists=True,
             direction=self.direction,
-            pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=5),
+            pruner=pruner,
         )
 
         if self.storage:
