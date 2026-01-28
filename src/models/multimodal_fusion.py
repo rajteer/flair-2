@@ -16,6 +16,52 @@ from torch import nn
 logger = logging.getLogger(__name__)
 
 
+class MultiScaleChannelAttention(nn.Module):
+    """Multi-Scale Channel Attention Module (MS-CAM).
+
+    Based on 'Attentional Feature Fusion' (Dai et al., 2021).
+    Fuses features by considering both global context (GAP) and local context
+    through pointwise 1x1 convolutions.
+
+    Args:
+        channels: Number of input/output channels.
+        r: Reduction ratio for the bottleneck.
+
+    """
+
+    def __init__(self, channels: int, r: int = 16) -> None:
+        """Initialize the MS-CAM module."""
+        super().__init__()
+        inter_channels = max(channels // r, 1)
+
+        # Local Path
+        self.local_path = nn.Sequential(
+            nn.Conv2d(channels, inter_channels, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(inter_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(inter_channels, channels, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(channels),
+        )
+
+        # Global Path
+        self.global_path = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, inter_channels, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(inter_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(inter_channels, channels, kernel_size=1, stride=1, padding=0),
+            nn.BatchNorm2d(channels),
+        )
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute spatial-varying gating weights."""
+        l_feat = self.local_path(x)
+        g_feat = self.global_path(x)
+        return self.sigmoid(l_feat + g_feat)
+
+
 class MultimodalLateFusion(nn.Module):
     """Late fusion model combining aerial and Sentinel-2 predictions.
 
@@ -92,6 +138,10 @@ class MultimodalLateFusion(nn.Module):
                 nn.ReLU(inplace=True),
                 nn.Conv2d(num_classes * 2, num_classes, kernel_size=1),
             )
+        elif fusion_mode == "attentional":
+            # Multi-Scale Channel Attention based fusion (SOTA)
+            # Operates on the sum of modality features
+            self.ms_cam = MultiScaleChannelAttention(num_classes)
         else:
             # 'average' mode requires no extra parameters
             self.class_weights = None  # type: ignore[assignment]
@@ -156,6 +206,8 @@ class MultimodalLateFusion(nn.Module):
             return self._concat_fusion(aerial_logits, sentinel_logits_up)
         if self.fusion_mode == "average":
             return (aerial_logits + sentinel_logits_up) / 2
+        if self.fusion_mode == "attentional":
+            return self._attentional_fusion(aerial_logits, sentinel_logits_up)
 
         msg = f"Unknown fusion_mode: {self.fusion_mode}"
         raise ValueError(msg)
@@ -253,6 +305,27 @@ class MultimodalLateFusion(nn.Module):
         concat = torch.cat([aerial_logits, sentinel_logits], dim=1)
         return self.fusion_head(concat)
 
+    def _attentional_fusion(
+        self,
+        aerial_logits: torch.Tensor,
+        sentinel_logits: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply SOTA attentional fusion using MS-CAM.
+
+        Args:
+            aerial_logits: Aerial predictions (B, K, H, W).
+            sentinel_logits: Sentinel predictions (B, K, H, W).
+
+        Returns:
+            Fused output (B, K, H, W).
+        """
+        # Sum of features for attention computation
+        sum_feat = aerial_logits + sentinel_logits
+        att = self.ms_cam(sum_feat)
+
+        # Weighted combination based on learned multi-scale attention
+        return att * aerial_logits + (1 - att) * sentinel_logits
+
     def get_fusion_weights(self) -> dict[str, torch.Tensor]:
         """Get the current per-class fusion weights.
 
@@ -286,6 +359,8 @@ class MultimodalLateFusion(nn.Module):
             return list(self.gate_network.parameters())
         if self.fusion_mode == "concat":
             return list(self.fusion_head.parameters())
+        if self.fusion_mode == "attentional":
+            return list(self.ms_cam.parameters())
         return []
 
 
