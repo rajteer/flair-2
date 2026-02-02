@@ -1,0 +1,126 @@
+# Configuration for multimodal mid-level fusion experiments
+# Combines UNetFormer encoder (aerial) and TSViT (Sentinel-2) with cross-attention
+
+data:
+  train:
+    images: /path/to/flair_2_aerial_train
+    masks: /path/to/flair_2_labels_train
+    sentinel: /path/to/flair_2_sen_train
+  val:
+    images: /path/to/flair_2_aerial_test
+    masks: /path/to/flair_2_labels_test
+    sentinel: /path/to/flair_2_sen_test
+  test:
+    images: /path/to/flair_2_aerial_test
+    masks: /path/to/flair_2_labels_test
+    sentinel: /path/to/flair_2_sen_test
+  
+  centroids_path: /path/to/flair-2_centroids_sp_to_patch.json
+  dataset_version: multimodal_mid_v1
+  num_classes: 13
+  batch_size: 4
+  num_workers: 4
+  pin_memory: true
+  
+  # Aerial image configuration
+  selected_channels:
+    - 0  # R
+    - 1  # G
+    - 2  # B
+    - 3  # NIR
+    - 4  # Elevation
+  
+  normalization:
+    enabled: true
+    mean: [0.485, 0.456, 0.406, 0.409878, 0.068752]
+    std: [0.229, 0.224, 0.225, 0.155107, 0.118672]
+    scale_to_unit: [true, true, true, true, false]
+    elevation_range: [0.0, 255.0]
+    elevation_channel_index: 4
+  
+  # Sentinel configuration
+  sentinel_patch_size: 10
+  use_monthly_average: true
+  cloud_snow_cover_threshold: 0.6
+  cloud_snow_prob_threshold: 50
+  sentinel_scale_factor: 10000.0
+  
+  other_class_index: 12
+
+model:
+  model_type: MultimodalMidFusion
+  
+  freeze_encoders: false  # Train end-to-end for mid-level fusion
+  
+  aerial_in_channels: 5
+  aerial_model_config:
+    backbone_name: swsl_resnet18
+    decode_channels: 64
+    dropout: 0.1
+    window_size: 8
+  
+  sentinel_in_channels: 10
+  sentinel_model_config:
+    image_size: 10
+    patch_size: 5
+    max_seq_len: 12
+    dim: 128
+    temporal_depth: 4
+    spatial_depth: 4
+    num_heads: 4
+    mlp_dim: 256
+    dropout: 0.1
+    emb_dropout: 0.1
+  
+  cross_attention_config:
+    num_heads: 8
+    dropout: 0.1
+
+training:
+  device: cuda
+  optimizer:
+    type: AdamW
+    learning_rate: 0.0001
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+  lr_scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 50
+      eta_min: 0.000001
+  epochs: 50
+  early_stopping_patience: 10
+  early_stopping_criterion: miou
+  loss_function:
+    type: CrossEntropyLoss
+    args:
+      ignore_index: 12
+
+experiment:
+  seed: 42
+  deterministic: true
+
+mlflow:
+  name: multimodal_mid_fusion
+  run_name: cross_attention_resnet18
+  tracking_uri: null
+  note: "Mid-level cross-attention fusion between UNetFormer and TSViT"
+  dagshub:
+    enabled: false
+    repo_owner: prajter00
+    repo_name: flair-2
+    branch: null
+
+evaluation:
+  log_confusion_matrix: true
+  log_comparison: true
+  log_sample_ids: []
+
+visualization:
+  language: en
+  labels:
+    ground_truth: Ground Truth
+    prediction: Prediction
+    predicted_class: Predicted Class
+    actual_class: Actual Class
+    confusion_matrix_title: Confusion Matrix

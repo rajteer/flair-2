@@ -123,9 +123,11 @@ class MultimodalLateFusion(nn.Module):
             # Gated fusion: learn spatially-varying weights from logits
             # Input: aerial_logits (K) + sentinel_logits (K) + optional cloud (1)
             gate_input_channels = num_classes * 2 + (1 if use_cloud_uncertainty else 0)
+            # Use GroupNorm instead of BatchNorm for stability with small batches
+            num_groups = min(8, num_classes)
             self.gate_network = nn.Sequential(
                 nn.Conv2d(gate_input_channels, num_classes, kernel_size=1),
-                nn.BatchNorm2d(num_classes),
+                nn.GroupNorm(num_groups, num_classes),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(num_classes, num_classes, kernel_size=1),
                 nn.Sigmoid(),  # Gate values in [0, 1]

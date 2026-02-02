@@ -20,6 +20,7 @@ except ImportError as e:
 from src.models.tsvit import TSViT
 from src.models.unetformer import UNetFormer
 from src.models.multimodal_fusion import MultimodalLateFusion, load_pretrained_multimodal
+from src.models.multimodal_mid_fusion import build_multimodal_mid_fusion
 
 
 def build_model(
@@ -220,6 +221,64 @@ def build_model(
             aerial_resolution=tuple(multimodal_config.get("aerial_resolution", [512, 512])),
             sentinel_resolution=tuple(multimodal_config.get("sentinel_resolution", [10, 10])),
             use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
+        )
+
+    if model_type.upper() == "MULTIMODALMIDFUSION":
+        multimodal_config = model_config or {}
+
+        # Build UNetFormer to extract backbone and decoder separately
+        unetformer_config = multimodal_config.get("aerial_model_config", {})
+        aerial_in_channels = multimodal_config.get("aerial_in_channels", in_channels)
+
+        temp_unetformer = UNetFormer(
+            decode_channels=unetformer_config.get("decode_channels", 64),
+            dropout=unetformer_config.get("dropout", 0.1),
+            backbone_name=unetformer_config.get("backbone_name", encoder_name or "swsl_resnet18"),
+            pretrained=encoder_weights is not None,
+            window_size=unetformer_config.get("window_size", 8),
+            num_classes=n_classes,
+            in_channels=aerial_in_channels,
+            use_aux_head=False,
+        )
+        aerial_backbone = temp_unetformer.backbone
+        aerial_decoder = temp_unetformer.decoder
+
+        # Get encoder channel info for cross-attention
+        encoder_channels = aerial_backbone.feature_info.channels()
+        aerial_channels = encoder_channels[-1]  # Deepest level channels
+
+        # Build TSViT for temporal encoding
+        sentinel_model_config = multimodal_config.get("sentinel_model_config", {})
+        sentinel_in_channels = multimodal_config.get("sentinel_in_channels", 10)
+
+        sentinel_encoder = TSViT(
+            image_size=int(sentinel_model_config.get("image_size", 10)),
+            patch_size=int(sentinel_model_config.get("patch_size", 2)),
+            in_channels=sentinel_in_channels,
+            num_classes=n_classes,
+            max_seq_len=int(sentinel_model_config.get("max_seq_len", 12)),
+            dim=int(sentinel_model_config.get("dim", 128)),
+            temporal_depth=int(sentinel_model_config.get("temporal_depth", 4)),
+            spatial_depth=int(sentinel_model_config.get("spatial_depth", 4)),
+            num_heads=int(sentinel_model_config.get("num_heads", 4)),
+            mlp_dim=int(sentinel_model_config.get("mlp_dim", 256)),
+            dropout=float(sentinel_model_config.get("dropout", 0.0)),
+            emb_dropout=float(sentinel_model_config.get("emb_dropout", 0.0)),
+        )
+
+        sentinel_dim = int(sentinel_model_config.get("dim", 128))
+        cross_attn_config = multimodal_config.get("cross_attention_config", {})
+
+        return build_multimodal_mid_fusion(
+            aerial_backbone=aerial_backbone,
+            aerial_decoder=aerial_decoder,
+            sentinel_encoder=sentinel_encoder,
+            num_classes=n_classes,
+            sentinel_dim=sentinel_dim,
+            aerial_channels=aerial_channels,
+            num_heads=int(cross_attn_config.get("num_heads", 8)),
+            dropout=float(cross_attn_config.get("dropout", 0.1)),
+            freeze_encoders=multimodal_config.get("freeze_encoders", True),
         )
 
     try:

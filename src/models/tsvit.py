@@ -284,6 +284,50 @@ class TSViT(nn.Module):
 
         return self._decode_spatial(temporal_tokens, batch_size)
 
+    def encode_temporal(
+        self,
+        x: torch.Tensor,
+        *,
+        batch_positions: torch.Tensor | None = None,
+        pad_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Encode temporal features without spatial decoding.
+
+        This method exposes intermediate temporal tokens for mid-level fusion.
+
+        Args:
+            x: Input tensor of shape (B, T, C, H, W).
+            batch_positions: Optional temporal positions of shape (B, T).
+            pad_mask: Optional padding mask of shape (B, T).
+
+        Returns:
+            Temporal tokens of shape (B, num_classes, num_patches, dim).
+
+        """
+        if x.ndim != TEMPORAL_INPUT_NDIM:
+            msg = "TSViT expects input of shape (B, T, C, H, W)"
+            raise ValueError(msg)
+
+        batch_size, time, _, height, width = x.shape
+        if height != self.image_size or width != self.image_size:
+            msg = (
+                "Input spatial resolution does not match configured image_size: "
+                f"expected {self.image_size}, got {(height, width)}"
+            )
+            raise ValueError(msg)
+
+        clean_x, metadata = self._split_metadata(x)
+        temporal_pos = self._prepare_positions(batch_positions, batch_size, time, x.device)
+        effective_mask = self._resolve_pad_mask(pad_mask, metadata, clean_x.device)
+
+        return self._encode_temporal(
+            clean_x,
+            temporal_pos,
+            effective_mask,
+            batch_size,
+            time,
+        )
+
     def _split_metadata(
         self,
         x: torch.Tensor,

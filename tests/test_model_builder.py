@@ -569,3 +569,110 @@ class TestBuildMultimodalModel:
 
         assert output.shape == (batch_size, num_classes, h, w)
         assert hasattr(model, "ms_cam")
+
+
+class TestBuildMultimodalMidFusionModel:
+    """Tests for MultimodalMidFusion model building."""
+
+    def test_builds_multimodal_mid_fusion(self, num_classes: int) -> None:
+        """Should build MultimodalMidFusion model."""
+        model = build_model(
+            model_type="MultimodalMidFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+
+        assert isinstance(model, nn.Module)
+        assert hasattr(model, "aerial_backbone")
+        assert hasattr(model, "aerial_decoder")
+        assert hasattr(model, "sentinel_encoder")
+        assert hasattr(model, "cross_attention")
+
+    def test_multimodal_mid_fusion_forward_pass(
+        self,
+        num_classes: int,
+        batch_size: int,
+    ) -> None:
+        """Forward pass should produce correct output shape."""
+        model = build_model(
+            model_type="MultimodalMidFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+                "freeze_encoders": False,
+            },
+        )
+        model.eval()
+
+        # Use 256x256 to have proper spatial dims for window attention
+        h, w = 256, 256
+        aerial = torch.randn(batch_size, 5, h, w)
+        sentinel = torch.randn(batch_size, 8, 10, 10, 10)
+        positions = torch.arange(8).unsqueeze(0).repeat(batch_size, 1)
+
+        with torch.no_grad():
+            output = model(aerial, sentinel, batch_positions=positions)
+
+        assert output.shape == (batch_size, num_classes, h, w)
+
+    def test_cross_attention_module(self, num_classes: int) -> None:
+        """CrossAttentionFusion module should work correctly."""
+        from src.models.multimodal_mid_fusion import CrossAttentionFusion
+
+        cross_attn = CrossAttentionFusion(
+            aerial_channels=512,
+            sentinel_dim=64,
+            num_heads=8,
+            dropout=0.1,
+        )
+
+        batch_size = 2
+        aerial_features = torch.randn(batch_size, 512, 8, 8)
+        sentinel_tokens = torch.randn(batch_size, num_classes, 25, 64)
+
+        output = cross_attn(aerial_features, sentinel_tokens)
+        assert output.shape == aerial_features.shape
+
+    def test_tsvit_encode_temporal(self, num_classes: int) -> None:
+        """TSViT.encode_temporal should return temporal tokens."""
+        from src.models.tsvit import TSViT
+
+        tsvit = TSViT(
+            image_size=10,
+            patch_size=2,
+            in_channels=10,
+            num_classes=num_classes,
+            max_seq_len=12,
+            dim=64,
+            temporal_depth=2,
+            spatial_depth=2,
+            num_heads=4,
+            mlp_dim=128,
+        )
+
+        batch_size = 2
+        x = torch.randn(batch_size, 8, 10, 10, 10)
+        positions = torch.arange(8).unsqueeze(0).repeat(batch_size, 1)
+
+        tokens = tsvit.encode_temporal(x, batch_positions=positions)
+
+        num_patches = (10 // 2) ** 2  # 25 patches
+        assert tokens.shape == (batch_size, num_classes, num_patches, 64)
