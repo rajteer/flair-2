@@ -65,10 +65,10 @@ class MultimodalAugmentation:
 
         """
         # Flip aerial and mask on last dimension (W)
-        aerial = torch.flip(aerial, dims=[-1])
-        mask = torch.flip(mask, dims=[-1])
+        aerial = torch.flip(aerial, dims=[-1]).contiguous()
+        mask = torch.flip(mask, dims=[-1]).contiguous()
         # Flip sentinel on last dimension (W)
-        sentinel = torch.flip(sentinel, dims=[-1])
+        sentinel = torch.flip(sentinel, dims=[-1]).contiguous()
         return aerial, sentinel, mask
 
     def _apply_vflip(
@@ -89,9 +89,9 @@ class MultimodalAugmentation:
 
         """
         # Flip on H dimension
-        aerial = torch.flip(aerial, dims=[-2])
-        mask = torch.flip(mask, dims=[-2])
-        sentinel = torch.flip(sentinel, dims=[-2])
+        aerial = torch.flip(aerial, dims=[-2]).contiguous()
+        mask = torch.flip(mask, dims=[-2]).contiguous()
+        sentinel = torch.flip(sentinel, dims=[-2]).contiguous()
         return aerial, sentinel, mask
 
     def _apply_rotation(
@@ -119,11 +119,11 @@ class MultimodalAugmentation:
         k = angle // 90  # Number of 90-degree rotations
 
         # Rotate aerial (B, C, H, W) on dims (-2, -1)
-        aerial = torch.rot90(aerial, k=k, dims=(-2, -1))
+        aerial = torch.rot90(aerial, k=k, dims=(-2, -1)).contiguous()
         # Rotate mask (B, H, W) on dims (-2, -1)
-        mask = torch.rot90(mask, k=k, dims=(-2, -1))
+        mask = torch.rot90(mask, k=k, dims=(-2, -1)).contiguous()
         # Rotate sentinel (B, T, C, H, W) on dims (-2, -1)
-        sentinel = torch.rot90(sentinel, k=k, dims=(-2, -1))
+        sentinel = torch.rot90(sentinel, k=k, dims=(-2, -1)).contiguous()
 
         return aerial, sentinel, mask
 
