@@ -147,6 +147,68 @@ def pad_collate_flair(
     return padded_sentinel, masks, pad_mask, sample_ids, batch_positions
 
 
+def collate_multimodal(
+    batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]],
+    pad_value: float = 0.0,
+) -> tuple[
+    tuple[torch.Tensor, torch.Tensor],
+    torch.Tensor,
+    torch.Tensor,
+    list[str],
+    torch.Tensor,
+]:
+    """Collate function for multimodal models that need both aerial and sentinel inputs.
+
+    When use_sentinel=True, FlairDataset returns (aerial, mask, sentinel, sample_id).
+    This collate function returns both aerial and sentinel data as a tuple for the
+    multimodal model input.
+
+    Args:
+        batch: List of tuples (aerial_img, mask, sentinel_data, sample_id) where:
+            - aerial_img: Tensor of shape (C, H, W)
+            - mask: Tensor of shape (H, W)
+            - sentinel_data: Tensor of shape (T_i, C_s, H_s, W_s) with T_i varying
+            - sample_id: String identifier
+        pad_value: Value to use for padding temporal dimension (default: 0.0)
+
+    Returns:
+        Tuple containing:
+            - inputs: Tuple of (aerial_images, padded_sentinel) where:
+                - aerial_images: Tensor of shape (B, C, H, W)
+                - padded_sentinel: Tensor of shape (B, T_max, C_s, H_s, W_s)
+            - masks: Tensor of shape (B, H, W) - targets
+            - pad_mask: Boolean tensor of shape (B, T_max) where True indicates padded
+            - sample_ids: List of sample identifiers
+            - batch_positions: Long tensor of shape (B, T_max) for temporal attention
+
+    """
+    aerial_images = torch.stack([item[0] for item in batch])
+    masks = torch.stack([item[1] for item in batch])
+    sentinel_data_list = [item[2] for item in batch]
+    sample_ids = [item[3] for item in batch]
+
+    temporal_lengths = [data.shape[0] for data in sentinel_data_list]
+    max_temporal_length = max(temporal_lengths)
+
+    padded_sentinel_list = []
+    for data in sentinel_data_list:
+        padded_data = pad_tensor(data, max_temporal_length, pad_value=pad_value)
+        padded_sentinel_list.append(padded_data)
+
+    padded_sentinel = torch.stack(padded_sentinel_list)
+
+    pad_mask = torch.zeros(len(batch), max_temporal_length, dtype=torch.bool)
+    for i, original_length in enumerate(temporal_lengths):
+        if original_length < max_temporal_length:
+            pad_mask[i, original_length:] = True
+
+    batch_positions = (
+        torch.arange(max_temporal_length, dtype=torch.long).unsqueeze(0).expand(len(batch), -1)
+    )
+
+    return (aerial_images, padded_sentinel), masks, pad_mask, sample_ids, batch_positions
+
+
 def collate_standard(
     batch: list[tuple[torch.Tensor, torch.Tensor, str]],
 ) -> tuple[torch.Tensor, torch.Tensor, None, list[str], None]:

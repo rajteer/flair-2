@@ -20,6 +20,15 @@ from src.utils.mlflow_utils import (
     log_prediction_plots,
 )
 from src.visualization.mosaic import log_prediction_mosaic_to_mlflow
+from src.data.pre_processing.flair_multimodal_dataset import (
+    MM_BATCH_AERIAL,
+    MM_BATCH_SENTINEL,
+    MM_BATCH_MASK,
+    MM_BATCH_SAMPLE_IDS,
+    MM_BATCH_POSITIONS,
+    MM_BATCH_PAD_MASK,
+    MM_BATCH_LENGTH,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -336,6 +345,124 @@ def _evaluate_batches_standard(
     return inference_times, batch_sizes
 
 
+def _perform_warmup_multimodal(
+    model: nn.Module,
+    device: torch.device,
+    data_loader: DataLoader,
+    warmup_runs: int,
+) -> None:
+    """Run warmup forward passes for multimodal models."""
+    if warmup_runs <= 0:
+        return
+
+    logger.info("Performing %d warmup runs (multimodal model)...", warmup_runs)
+    with torch.no_grad():
+        for warmup_count, batch in enumerate(data_loader):
+            if warmup_count >= warmup_runs:
+                break
+            aerial_input = batch[MM_BATCH_AERIAL].to(device)
+            sentinel_input = batch[MM_BATCH_SENTINEL].to(device)
+            batch_positions = batch[MM_BATCH_POSITIONS].to(device)
+            pad_mask = batch[MM_BATCH_PAD_MASK].to(device)
+
+            _ = model(
+                aerial_input,
+                sentinel_input,
+                batch_positions=batch_positions,
+                pad_mask=pad_mask,
+            )
+
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+    logger.info("Warmup runs completed")
+
+
+def _forward_with_timing_multimodal(
+    model: nn.Module,
+    aerial_input: torch.Tensor,
+    sentinel_input: torch.Tensor,
+    device: torch.device,
+    batch_positions: torch.Tensor,
+    pad_mask: torch.Tensor,
+) -> tuple[torch.Tensor, float]:
+    """Run a forward pass for multimodal models and measure its duration."""
+    if torch.cuda.is_available() and device.type == "cuda":
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        start_event.record()
+        outputs = model(
+            aerial_input,
+            sentinel_input,
+            batch_positions=batch_positions,
+            pad_mask=pad_mask,
+        )
+        end_event.record()
+        torch.cuda.synchronize()
+        batch_time = start_event.elapsed_time(end_event) / 1000.0
+    else:
+        start = time.perf_counter()
+        outputs = model(
+            aerial_input,
+            sentinel_input,
+            batch_positions=batch_positions,
+            pad_mask=pad_mask,
+        )
+        batch_time = time.perf_counter() - start
+
+    return outputs, batch_time
+
+
+def _evaluate_batches_multimodal(
+    model: nn.Module,
+    device: torch.device,
+    data_loader: DataLoader,
+    num_classes: int,
+    evaluation_metrics_dict: dict[str, Metric],
+    sample_ids_to_log: set[str],
+) -> tuple[list[float], list[int]]:
+    """Iterate over dataloader for multimodal models, update metrics, collect timing."""
+    inference_times: list[float] = []
+    batch_sizes: list[int] = []
+
+    with torch.no_grad():
+        for batch in tqdm(data_loader, desc="Evaluating", leave=False):
+            aerial_input = batch[MM_BATCH_AERIAL].to(device)
+            sentinel_input = batch[MM_BATCH_SENTINEL].to(device)
+            targets = batch[MM_BATCH_MASK].to(device)
+            batch_positions = batch[MM_BATCH_POSITIONS].to(device)
+            pad_mask = batch[MM_BATCH_PAD_MASK].to(device)
+
+            sample_ids = batch[MM_BATCH_SAMPLE_IDS]
+
+            outputs, batch_time = _forward_with_timing_multimodal(
+                model,
+                aerial_input,
+                sentinel_input,
+                device,
+                batch_positions,
+                pad_mask,
+            )
+            inference_times.append(batch_time)
+            batch_sizes.append(aerial_input.shape[0])
+
+            processed_outputs = process_segmentation_tensor(outputs, num_classes)
+
+            for metric in evaluation_metrics_dict.values():
+                metric.update(processed_outputs, targets)
+
+            if sample_ids_to_log:
+                selected_ids = {
+                    sample_id for sample_id in sample_ids if sample_id in sample_ids_to_log
+                }
+                if selected_ids:
+                    log_prediction_plots(outputs, sample_ids, num_classes, selected_ids)
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return inference_times, batch_sizes
+
+
 def _finalize_evaluation(
     evaluation_metrics_dict: dict[str, Metric],
     inference_times: list[float],
@@ -434,6 +561,7 @@ def evaluate(
     class_name_mapping: dict[int, str] | None = None,
     zone_mosaic_config: dict | None = None,
     zone_data_loader: DataLoader | None = None,
+    is_multimodal: bool = False,
 ) -> dict[str, float]:
     """Evaluate model and log metrics and plots.
 
@@ -453,6 +581,7 @@ def evaluate(
         zone_mosaic_config: Optional config for zone prediction mosaic visualization.
             Expected keys: 'enabled', 'zone_name', 'grid_size', 'patch_size'.
         zone_data_loader: Optional DataLoader for a specific zone (for mosaic visualization).
+        is_multimodal: Whether the model is multimodal (aerial + sentinel inputs).
 
     """
     if class_name_mapping is None:
@@ -470,9 +599,31 @@ def evaluate(
     sample_ids_to_log = set(sample_ids_to_plot) if sample_ids_to_plot else set()
 
     first_batch = next(iter(data_loader))
-    is_temporal_model = first_batch[BATCH_INDEX_INPUTS].ndim == TEMPORAL_MODEL_NDIM
 
-    if is_temporal_model:
+    # Detect model type - multimodal can be explicitly set or detected from batch structure
+    # Multimodal batches from multimodal_collate_fn have MM_BATCH_LENGTH elements
+    is_multimodal_model = is_multimodal or (
+        isinstance(first_batch, tuple) and len(first_batch) == MM_BATCH_LENGTH
+    )
+
+    if is_multimodal_model:
+        is_temporal_model = False
+    else:
+        first_inputs = first_batch[BATCH_INDEX_INPUTS]
+        is_temporal_model = first_inputs.ndim == TEMPORAL_MODEL_NDIM
+
+    if is_multimodal_model:
+        logger.info("Detected multimodal model. Using multimodal evaluation.")
+        _perform_warmup_multimodal(model, device, data_loader, warmup_runs)
+        inference_times, batch_sizes = _evaluate_batches_multimodal(
+            model,
+            device,
+            data_loader,
+            num_classes,
+            evaluation_metrics_dict,
+            sample_ids_to_log,
+        )
+    elif is_temporal_model:
         logger.info("Detected temporal model (5D input). Using temporal evaluation.")
         _perform_warmup_temporal(model, device, data_loader, warmup_runs)
         inference_times, batch_sizes = _evaluate_batches_temporal(

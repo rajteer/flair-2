@@ -12,7 +12,7 @@ import mlflow
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataset_utils import collate_standard, pad_collate_flair
+from src.data.dataset_utils import collate_multimodal, collate_standard, pad_collate_flair
 from src.data.pre_processing.flair_dataset import FlairDataset, MultiChannelNormalize
 from src.models.model_builder import (
     build_loss_function,
@@ -209,6 +209,17 @@ class TrainEvalPipeline:
             num_workers = config["data"]["num_workers"]
             pin_memory = config["data"].get("pin_memory", True)
 
+            # Determine collate function based on model type and sentinel usage
+            model_type = config["model"]["model_type"].upper()
+            is_multimodal = model_type in ("MULTIMODALMIDFUSION", "MULTIMODALLATEFUSION")
+
+            if is_multimodal and use_sentinel:
+                collate_fn = collate_multimodal
+            elif use_sentinel:
+                collate_fn = pad_collate_flair
+            else:
+                collate_fn = collate_standard
+
             train_loader = DataLoader(
                 train_dataset,
                 batch_size=config["data"]["batch_size"],
@@ -218,7 +229,7 @@ class TrainEvalPipeline:
                 generator=generator,
                 persistent_workers=bool(num_workers > 0),
                 pin_memory=pin_memory,
-                collate_fn=pad_collate_flair if use_sentinel else collate_standard,
+                collate_fn=collate_fn,
             )
 
             val_loader = DataLoader(
@@ -229,7 +240,7 @@ class TrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
                 pin_memory=pin_memory,
-                collate_fn=pad_collate_flair if use_sentinel else collate_standard,
+                collate_fn=collate_fn,
             )
 
             test_loader = DataLoader(
@@ -240,7 +251,7 @@ class TrainEvalPipeline:
                 worker_init_fn=seed_worker,
                 persistent_workers=bool(num_workers > 0),
                 pin_memory=pin_memory,
-                collate_fn=pad_collate_flair if use_sentinel else collate_standard,
+                collate_fn=collate_fn,
             )
 
             criterion = build_loss_function(

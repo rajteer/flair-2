@@ -24,7 +24,13 @@ from torchmetrics.classification import MulticlassJaccardIndex
 from src.data.pre_processing.flair_multimodal_dataset import (
     FlairMultimodalDataset,
     multimodal_collate_fn,
+    MM_BATCH_AERIAL,
+    MM_BATCH_SENTINEL,
+    MM_BATCH_MASK,
+    MM_BATCH_POSITIONS,
+    MM_BATCH_PAD_MASK,
 )
+from src.data.pre_processing.multimodal_augmentation import MultimodalAugmentation
 from src.models.model_builder import (
     build_loss_function,
     build_lr_scheduler,
@@ -33,9 +39,10 @@ from src.models.model_builder import (
 )
 from src.models.validation import evaluate
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
-from src.utils.mlflow_utils import init_mlflow, log_metrics_to_mlflow, log_model_to_mlflow
+from src.utils.mlflow_utils import init_mlflow, log_metrics_to_mlflow
 from src.utils.read_yaml import read_yaml
 from src.utils.reproducibility import create_generator, seed_everything, seed_worker
+from src.visualization.utils import class_name_mapping
 
 logger = logging.getLogger(__name__)
 
@@ -49,21 +56,13 @@ except (AttributeError, ImportError):
     _USE_NEW_AMP_API = False
 
 
-# Batch indices for multimodal collate output
-BATCH_AERIAL = 0
-BATCH_SENTINEL = 1
-BATCH_MASK = 2
-BATCH_SAMPLE_IDS = 3
-BATCH_POSITIONS = 4
-BATCH_PAD_MASK = 5
-
-
 def _train_epoch_multimodal(
     model: nn.Module,
     loader: DataLoader,
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    augmenter: MultimodalAugmentation | None = None,
     accumulation_steps: int = 1,
     use_amp: bool = False,
     scheduler: LRScheduler | None = None,
@@ -77,6 +76,7 @@ def _train_epoch_multimodal(
         criterion: Loss function.
         optimizer: Optimizer.
         device: Training device.
+        augmenter: Optional multimodal augmentation to apply.
         accumulation_steps: Gradient accumulation steps.
         use_amp: Whether to use automatic mixed precision.
         scheduler: Optional step-level scheduler.
@@ -98,11 +98,17 @@ def _train_epoch_multimodal(
     total_loss = 0.0
 
     for batch_idx, batch_data in enumerate(loader):
-        aerial = batch_data[BATCH_AERIAL].to(device)
-        sentinel = batch_data[BATCH_SENTINEL].to(device)
-        masks = batch_data[BATCH_MASK].to(device)
-        positions = batch_data[BATCH_POSITIONS].to(device)
-        pad_mask = batch_data[BATCH_PAD_MASK].to(device)
+        aerial = batch_data[MM_BATCH_AERIAL].to(device)
+        sentinel = batch_data[MM_BATCH_SENTINEL].to(device)
+        masks = batch_data[MM_BATCH_MASK].to(device)
+        positions = batch_data[MM_BATCH_POSITIONS].to(device)
+        pad_mask = batch_data[MM_BATCH_PAD_MASK].to(device)
+
+        # Apply augmentations if provided
+        if augmenter is not None:
+            aerial, sentinel, masks, positions, pad_mask = augmenter(
+                aerial, sentinel, masks, positions, pad_mask, training=True
+            )
 
         optimizer.zero_grad()
 
@@ -171,11 +177,11 @@ def _validate_epoch_multimodal(
 
     with torch.no_grad():
         for batch_data in loader:
-            aerial = batch_data[BATCH_AERIAL].to(device)
-            sentinel = batch_data[BATCH_SENTINEL].to(device)
-            masks = batch_data[BATCH_MASK].to(device)
-            positions = batch_data[BATCH_POSITIONS].to(device)
-            pad_mask = batch_data[BATCH_PAD_MASK].to(device)
+            aerial = batch_data[MM_BATCH_AERIAL].to(device)
+            sentinel = batch_data[MM_BATCH_SENTINEL].to(device)
+            masks = batch_data[MM_BATCH_MASK].to(device)
+            positions = batch_data[MM_BATCH_POSITIONS].to(device)
+            pad_mask = batch_data[MM_BATCH_PAD_MASK].to(device)
 
             outputs = model(
                 aerial,
@@ -200,6 +206,7 @@ def train_multimodal(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     scheduler: LRScheduler | None = None,
+    augmenter: MultimodalAugmentation | None = None,
     epochs: int = 100,
     patience: int = 20,
     num_classes: int = 13,
@@ -222,6 +229,7 @@ def train_multimodal(
         optimizer: Optimizer.
         device: Training device.
         scheduler: Optional learning rate scheduler.
+        augmenter: Optional multimodal augmentation to apply during training.
         epochs: Maximum epochs.
         patience: Early stopping patience.
         num_classes: Number of classes.
@@ -261,6 +269,7 @@ def train_multimodal(
             criterion=criterion,
             optimizer=optimizer,
             device=device,
+            augmenter=augmenter,
             accumulation_steps=accumulation_steps,
             use_amp=use_amp,
             scheduler=step_scheduler,
@@ -500,7 +509,7 @@ class MultimodalTrainEvalPipeline:
                 encoder_weights=config["model"].get("encoder_weights"),
                 in_channels=config["model"].get("aerial_in_channels", 5),
                 n_classes=data_cfg["num_classes"],
-                model_config=config["model"],
+                model_config=config["model"].get("model_config"),
             )
 
             criterion = build_loss_function(
@@ -535,6 +544,21 @@ class MultimodalTrainEvalPipeline:
             logger.info("Fusion mode: %s", config["model"].get("fusion_mode", "weighted"))
             logger.info("Freeze encoders: %s", config["model"].get("freeze_encoders", True))
 
+            # Create augmenter if augmentation is enabled
+            apply_augmentations = data_cfg.get("data_augmentation", {}).get(
+                "apply_augmentations", False
+            )
+            augmenter = None
+            if apply_augmentations:
+                augmenter = MultimodalAugmentation(data_cfg)
+                logger.info("Multimodal augmentation enabled")
+                sentinel_aug_enabled = data_cfg.get("sentinel_augmentation", {}).get(
+                    "enabled", False
+                )
+                logger.info("Sentinel augmentation enabled: %s", sentinel_aug_enabled)
+            else:
+                logger.info("Augmentation disabled")
+
             train_multimodal(
                 model=model,
                 train_loader=train_loader,
@@ -542,6 +566,7 @@ class MultimodalTrainEvalPipeline:
                 criterion=criterion,
                 optimizer=optimizer,
                 scheduler=lr_scheduler,
+                augmenter=augmenter,
                 device=device,
                 epochs=config["training"]["epochs"],
                 patience=config["training"]["early_stopping_patience"],
@@ -557,18 +582,38 @@ class MultimodalTrainEvalPipeline:
 
             logger.info("Training finished. Evaluating on test set...")
 
-            # Note: evaluate() expects single-input model, for now just compute mIoU
-            test_loss, test_miou = _validate_epoch_multimodal(
+            visualization_labels = config.get("visualization", {}).get("labels", None)
+            labels_language = config.get("visualization", {}).get("language")
+            class_labels = class_name_mapping.get(labels_language)
+
+            if labels_language is not None and class_labels is None:
+                logger.warning(
+                    "Unsupported visualization.language '%s'. No class name mapping.",
+                    labels_language,
+                )
+
+            evaluate(
                 model=model,
-                loader=test_loader,
-                criterion=criterion,
                 device=device,
+                data_loader=test_loader,
                 num_classes=data_cfg["num_classes"],
-                ignore_index=data_cfg.get("other_class_index"),
+                other_class_index=data_cfg.get("other_class_index"),
+                class_name_mapping=class_labels,
+                log_confusion_matrix=config.get("evaluation", {}).get(
+                    "log_confusion_matrix",
+                    True,
+                ),
+                sample_ids_to_plot=config.get("evaluation", {}).get("log_sample_ids"),
+                visualization_labels=visualization_labels,
+                is_multimodal=True,
             )
 
-            logger.info("Test Loss: %.4f, Test mIoU: %.4f", test_loss, test_miou)
-            mlflow.log_metrics({"test_loss": test_loss, "test_miou": test_miou})
+            # Log the trained model
+            if config["training"].get("log_model", True):
+                # Use raw log_model for multimodal to avoid signature issues
+                mlflow.pytorch.log_model(model, "model")
+
+            mlflow.log_artifact(str(self.log_file), artifact_path="logs")
 
             logger.info("Multimodal pipeline completed successfully.")
 

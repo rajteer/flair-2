@@ -28,6 +28,16 @@ from .sentinel_utils import (
     parse_sentinel_day_of_year,
 )
 
+# Batch indices for multimodal_collate_fn output tuple
+# Use these constants when accessing elements from multimodal batches
+MM_BATCH_AERIAL = 0
+MM_BATCH_SENTINEL = 1
+MM_BATCH_MASK = 2
+MM_BATCH_SAMPLE_IDS = 3
+MM_BATCH_POSITIONS = 4
+MM_BATCH_PAD_MASK = 5
+MM_BATCH_LENGTH = 6  # Number of elements in multimodal batch tuple
+
 logger = logging.getLogger(__name__)
 
 

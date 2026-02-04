@@ -199,7 +199,7 @@ def filter_cloudy_snowy_timesteps(
 
 def compute_monthly_averages(
     sentinel_patch: np.ndarray,
-    masks_patch: np.ndarray,
+    masks_patch: np.ndarray | None,
     product_names: list[str],
     cloud_snow_cover_threshold: float = 0.6,
     cloud_snow_prob_threshold: int = 50,
@@ -212,7 +212,7 @@ def compute_monthly_averages(
 
     Args:
         sentinel_patch: Sentinel-2 data with shape (T, C, H, W)
-        masks_patch: Cloud/snow masks with shape (T, 2, H, W)
+        masks_patch: Cloud/snow masks with shape (T, 2, H, W), or None
         product_names: List of Sentinel-2 product names (length T)
         cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1)
         cloud_snow_prob_threshold: Minimum probability (0-100) to consider pixel
@@ -221,7 +221,7 @@ def compute_monthly_averages(
     Returns:
         Tuple of:
         - Monthly averaged Sentinel-2 data with shape (M, C, H, W) where M <= 12
-        - List of month indices (0-11) corresponding to each averaged timestep
+        - List of month indices (1-12) for each averaged timestep
 
     """
     monthly_timesteps = defaultdict(list)
@@ -235,17 +235,21 @@ def compute_monthly_averages(
         cloudless_timesteps = []
 
         for t in timesteps:
-            max_prob = np.maximum(
-                masks_patch[t, 0, :, :],
-                masks_patch[t, 1, :, :],
-            )
-            total_pixels = masks_patch.shape[2] * masks_patch.shape[3]
-            covered_pixels = np.count_nonzero(
-                max_prob >= cloud_snow_prob_threshold,
-            )
-            coverage_ratio = covered_pixels / total_pixels
+            if masks_patch is not None:
+                max_prob = np.maximum(
+                    masks_patch[t, 0, :, :],
+                    masks_patch[t, 1, :, :],
+                )
+                total_pixels = masks_patch.shape[2] * masks_patch.shape[3]
+                covered_pixels = np.count_nonzero(
+                    max_prob >= cloud_snow_prob_threshold,
+                )
+                coverage_ratio = covered_pixels / total_pixels
 
-            if coverage_ratio < cloud_snow_cover_threshold:
+                if coverage_ratio < cloud_snow_cover_threshold:
+                    cloudless_timesteps.append(t)
+            else:
+                # No masks, use all timesteps
                 cloudless_timesteps.append(t)
 
         if cloudless_timesteps:
@@ -261,11 +265,11 @@ def compute_monthly_averages(
 
     for year_month in sorted_months:
         timesteps = monthly_cloudless[year_month]
-        year, month = year_month
 
         month_data = np.mean(sentinel_patch[timesteps], axis=0)
         monthly_data_list.append(month_data)
-        month_indices.append(month - 1)  # Convert 1-12 to 0-11
+        # Extract month (1-12) from (year, month) tuple
+        month_indices.append(year_month[1])
 
     monthly_data = np.stack(monthly_data_list, axis=0)  # Shape: (M, C, H, W)
 

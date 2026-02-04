@@ -179,6 +179,102 @@ def _train_epoch_temporal(
     return total_loss / len(loader)
 
 
+def _train_epoch_multimodal(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    accumulation_steps: int = 1,
+    use_amp: bool = False,
+    scheduler: LRScheduler | None = None,
+    max_grad_norm: float | None = None,
+) -> float:
+    """Train a multimodal model for a single epoch and return average loss.
+
+    Multimodal models receive (aerial_input, sentinel_input) as a tuple.
+    """
+    model.train()
+    optimizer.zero_grad()
+
+    scaler_enabled = use_amp and device.type == "cuda"
+    if _USE_NEW_AMP_API:
+        scaler = GradScaler(device=device.type, enabled=scaler_enabled)
+    else:
+        scaler = GradScaler(enabled=scaler_enabled)
+    total_loss = 0.0
+
+    for batch_idx, batch_data in enumerate(loader):
+        inputs = batch_data[BATCH_INDEX_INPUTS]
+        aerial_input = inputs[0].to(device)
+        sentinel_input = inputs[1].to(device)
+        y = batch_data[BATCH_INDEX_TARGETS].to(device)
+        batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
+
+        optimizer.zero_grad()
+        if _USE_NEW_AMP_API:
+            ctx = autocast(device_type=device.type, enabled=use_amp)
+        else:
+            ctx = autocast(enabled=use_amp)
+
+        with ctx:
+            outputs = model(aerial_input, sentinel_input, batch_positions=batch_positions)
+            loss = criterion(outputs, y)
+            loss_value = loss.item()
+            loss = loss / accumulation_steps
+
+        scaler.scale(loss).backward()
+
+        if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+            if max_grad_norm is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+            if scheduler is not None:
+                scheduler.step()
+
+        total_loss += float(loss_value)
+
+    return total_loss / len(loader)
+
+
+def _validate_epoch_multimodal(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader,
+    criterion: torch.nn.Module,
+    device: torch.device,
+    num_classes: int,
+    ignore_index: int | None = None,
+) -> tuple[float, float]:
+    """Validate a multimodal model for a single epoch and return avg loss and mIoU."""
+    model.eval()
+    val_loss = 0.0
+
+    miou_metric = MulticlassJaccardIndex(
+        num_classes=num_classes,
+        ignore_index=ignore_index,
+    ).to(device)
+
+    with torch.no_grad():
+        for batch_data in loader:
+            inputs = batch_data[BATCH_INDEX_INPUTS]
+            aerial_input = inputs[0].to(device)
+            sentinel_input = inputs[1].to(device)
+            y = batch_data[BATCH_INDEX_TARGETS].to(device)
+            batch_positions = batch_data[BATCH_INDEX_POSITIONS].to(device)
+
+            outputs = model(aerial_input, sentinel_input, batch_positions=batch_positions)
+            loss = criterion(outputs, y)
+            val_loss += float(loss.item())
+
+            preds = outputs.argmax(dim=1)
+            miou_metric.update(preds, y)
+
+    return val_loss / len(loader), miou_metric.compute().item()
+
+
 def _train_epoch_standard(
     model: torch.nn.Module,
     loader: torch.utils.data.DataLoader,
@@ -397,16 +493,31 @@ def train(
     model.to(device)
 
     sample_inputs, sample_batch_positions = _get_sample_batch(train_loader)
-    sample_input_shape = tuple(int(x) for x in sample_inputs.shape)
+
+    # Detect model type based on input structure
+    is_multimodal_model = isinstance(sample_inputs, tuple)
+    is_temporal_model = not is_multimodal_model and sample_inputs.ndim == TEMPORAL_MODEL_NDIM
+
+    if is_multimodal_model:
+        # For multimodal models, use aerial input shape for logging
+        sample_input_shape = tuple(int(x) for x in sample_inputs[0].shape)
+    else:
+        sample_input_shape = tuple(int(x) for x in sample_inputs.shape)
 
     if log_evaluation_metrics:
-        _log_model_description(
-            model,
-            device,
-            sample_input_shape,
-            sample_inputs=sample_inputs,
-            batch_positions=sample_batch_positions,
-        )
+        # Skip torchinfo for multimodal models as it cannot handle tuple inputs
+        if not is_multimodal_model:
+            _log_model_description(
+                model,
+                device,
+                sample_input_shape,
+                sample_inputs=sample_inputs,
+                batch_positions=sample_batch_positions,
+            )
+        else:
+            logger.info(
+                "Skipping torchinfo model summary for multimodal model (tuple inputs not supported)"
+            )
 
     best_val_loss = float("inf")
     best_val_miou = 0.0
@@ -430,9 +541,11 @@ def train(
             )
     best_model_state = None
 
-    is_temporal_model = sample_inputs.ndim == TEMPORAL_MODEL_NDIM
-
-    if is_temporal_model:
+    if is_multimodal_model:
+        logger.info("Detected multimodal model (tuple input). Using multimodal training loop.")
+        train_epoch_fn = _train_epoch_multimodal
+        validate_epoch_fn = _validate_epoch_multimodal
+    elif is_temporal_model:
         logger.info("Detected temporal model (5D input). Using temporal training loop.")
         train_epoch_fn = _train_epoch_temporal
         validate_epoch_fn = _validate_epoch_temporal
@@ -445,7 +558,7 @@ def train(
     step_scheduler = scheduler if is_step_scheduler else None
 
     for epoch in range(epochs):
-        if is_temporal_model:
+        if is_multimodal_model or is_temporal_model:
             loss_epoch = train_epoch_fn(
                 model,
                 train_loader,
