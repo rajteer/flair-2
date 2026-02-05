@@ -24,11 +24,15 @@ class CrossAttentionFusion(nn.Module):
     This allows the aerial branch to selectively attend to relevant temporal
     information from Sentinel data.
 
+    Spatial position embeddings are added to sentinel tokens to preserve
+    their spatial reference during cross-attention.
+
     Args:
         aerial_channels: Number of channels in aerial feature maps.
         sentinel_dim: Embedding dimension of Sentinel temporal tokens.
         num_heads: Number of attention heads.
         dropout: Dropout rate for attention weights.
+        max_sentinel_patches: Maximum number of Sentinel patches (for position embeddings).
 
     """
 
@@ -38,6 +42,7 @@ class CrossAttentionFusion(nn.Module):
         sentinel_dim: int,
         num_heads: int = 8,
         dropout: float = 0.1,
+        max_sentinel_patches: int = 16,  # Default: 4x4 patches from 40x40 with patch_size=10
     ) -> None:
         """Initialize cross-attention fusion module."""
         super().__init__()
@@ -46,6 +51,7 @@ class CrossAttentionFusion(nn.Module):
         self.sentinel_dim = sentinel_dim
         self.num_heads = num_heads
         self.head_dim = aerial_channels // num_heads
+        self.max_sentinel_patches = max_sentinel_patches
 
         if aerial_channels % num_heads != 0:
             msg = (
@@ -62,11 +68,22 @@ class CrossAttentionFusion(nn.Module):
         self.k_proj = nn.Linear(sentinel_dim, aerial_channels)
         self.v_proj = nn.Linear(sentinel_dim, aerial_channels)
 
+        # Learnable spatial position embeddings for Sentinel patches
+        # These help the model understand WHERE each Sentinel token came from
+        self.sentinel_spatial_pos = nn.Parameter(
+            torch.randn(1, max_sentinel_patches, sentinel_dim) * 0.02
+        )
+
         # Output projection
         self.out_proj = nn.Conv2d(aerial_channels, aerial_channels, kernel_size=1)
 
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(aerial_channels)
+
+        # Learnable gating for residual connection
+        # Initialized to -5.0 so sigmoid(-5) ≈ 0.007, making model start as pure aerial
+        # This "zero-init residual" pattern improves training stability (ResNet-v2, GPT-2)
+        self.gate = nn.Parameter(torch.tensor([-5.0]))
 
     def forward(
         self,
@@ -87,8 +104,24 @@ class CrossAttentionFusion(nn.Module):
         batch, channels, height, width = aerial_features.shape
         _, num_classes, num_patches, sentinel_dim = sentinel_tokens.shape
 
+        # Add spatial position embeddings to sentinel tokens BEFORE flattening
+        # This preserves the spatial reference (which patch each token came from)
+        if num_patches <= self.max_sentinel_patches:
+            spatial_pos = self.sentinel_spatial_pos[:, :num_patches, :]
+        else:
+            # Interpolate position embeddings if needed
+            spatial_pos = nn.functional.interpolate(
+                self.sentinel_spatial_pos.transpose(1, 2),
+                size=num_patches,
+                mode="linear",
+                align_corners=False,
+            ).transpose(1, 2)
+
+        # sentinel_tokens: (B, K, P, dim) + spatial_pos: (1, P, dim) -> broadcast over K
+        sentinel_with_pos = sentinel_tokens + spatial_pos.unsqueeze(1)
+
         # Flatten sentinel tokens: (B, K*P, dim)
-        sentinel_flat = sentinel_tokens.view(batch, num_classes * num_patches, sentinel_dim)
+        sentinel_flat = sentinel_with_pos.view(batch, num_classes * num_patches, sentinel_dim)
 
         # Project to Q (from aerial), K/V (from sentinel)
         # Q: (B, C, H, W) -> (B, C, H*W) -> (B, H*W, C)
@@ -128,8 +161,8 @@ class CrossAttentionFusion(nn.Module):
         out = out.permute(0, 2, 1).view(batch, channels, height, width)
         out = self.out_proj(out)
 
-        # Residual connection
-        return aerial_features + out
+        # Gated residual connection (starts at 0, learns optimal blend)
+        return aerial_features + torch.sigmoid(self.gate) * out
 
 
 class MultimodalMidFusion(nn.Module):
@@ -227,6 +260,7 @@ def build_multimodal_mid_fusion(  # noqa: PLR0913
     num_heads: int = 8,
     dropout: float = 0.1,
     freeze_encoders: bool = True,
+    max_sentinel_patches: int = 16,
 ) -> MultimodalMidFusion:
     """Factory function to build MultimodalMidFusion model.
 
@@ -240,6 +274,7 @@ def build_multimodal_mid_fusion(  # noqa: PLR0913
         num_heads: Number of cross-attention heads.
         dropout: Dropout rate for attention.
         freeze_encoders: Whether to freeze encoder weights.
+        max_sentinel_patches: Maximum Sentinel patches for spatial position embeddings.
 
     Returns:
         Configured MultimodalMidFusion model.
@@ -250,6 +285,7 @@ def build_multimodal_mid_fusion(  # noqa: PLR0913
         sentinel_dim=sentinel_dim,
         num_heads=num_heads,
         dropout=dropout,
+        max_sentinel_patches=max_sentinel_patches,
     )
 
     return MultimodalMidFusion(
