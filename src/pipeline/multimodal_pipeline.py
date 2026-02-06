@@ -523,6 +523,18 @@ class MultimodalTrainEvalPipeline:
             model.to(device)
             criterion.to(device)
 
+            # Log model parameter count
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info("Total parameters: %d", total_params)
+            logger.info("Trainable parameters: %d", trainable_params)
+            mlflow.log_params(
+                {
+                    "total_params": total_params,
+                    "trainable_params": trainable_params,
+                }
+            )
+
             optimizer = build_optimizer(
                 model=model,
                 optimizer_type=config["training"]["optimizer"]["type"],
