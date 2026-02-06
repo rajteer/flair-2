@@ -216,8 +216,10 @@ class GlobalLocalAttention(nn.Module):
         return x
 
     def pad_out(self, x: torch.Tensor) -> torch.Tensor:
-        x = functional.pad(x, pad=(0, 1, 0, 1), mode="reflect")
-        return x
+        _, _, H, W = x.size()
+        # Use reflect mode only if dimensions are large enough, otherwise use constant
+        mode = "reflect" if H > 1 and W > 1 else "constant"
+        return functional.pad(x, pad=(0, 1, 0, 1), mode=mode)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -265,8 +267,11 @@ class GlobalLocalAttention(nn.Module):
 
         attn = attn[:, :, :H, :W]
 
-        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + self.attn_y(
-            functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"),
+        # Use reflect mode only if dimensions are large enough for the padding
+        h_mode = "reflect" if H > 1 else "constant"
+        w_mode = "reflect" if W > 1 else "constant"
+        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode=h_mode)) + self.attn_y(
+            functional.pad(attn, pad=(0, 1, 0, 0), mode=w_mode),
         )
 
         out = out + local
