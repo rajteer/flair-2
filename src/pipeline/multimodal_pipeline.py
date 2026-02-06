@@ -262,6 +262,7 @@ def train_multimodal(
     is_step_scheduler = scheduler is not None and not isinstance(scheduler, ReduceLROnPlateau)
     step_scheduler = scheduler if is_step_scheduler else None
 
+    logger.info("Starting training loop for %d epochs...", epochs)
     for epoch in range(epochs):
         loss_epoch = _train_epoch_multimodal(
             model=model,

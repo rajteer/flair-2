@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 import segmentation_models_pytorch as smp
+import torch
 from backbones.utae import UTAE
 from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
@@ -268,6 +269,33 @@ def build_model(
 
         sentinel_dim = int(sentinel_model_config.get("dim", 128))
         cross_attn_config = multimodal_config.get("cross_attention_config", {})
+
+        # Load pre-trained checkpoints if provided
+        aerial_checkpoint = multimodal_config.get("aerial_checkpoint")
+        sentinel_checkpoint = multimodal_config.get("sentinel_checkpoint")
+
+        if aerial_checkpoint:
+            logger.info("Loading aerial model from %s", aerial_checkpoint)
+            state_dict = torch.load(aerial_checkpoint, map_location="cpu")
+            if "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
+            # Filter only backbone weights
+            backbone_state = {
+                k.replace("backbone.", ""): v
+                for k, v in state_dict.items()
+                if k.startswith("backbone.")
+            }
+            if backbone_state:
+                aerial_backbone.load_state_dict(backbone_state, strict=False)
+                logger.info("Loaded %d backbone parameters", len(backbone_state))
+
+        if sentinel_checkpoint:
+            logger.info("Loading Sentinel model from %s", sentinel_checkpoint)
+            state_dict = torch.load(sentinel_checkpoint, map_location="cpu")
+            if "model_state_dict" in state_dict:
+                state_dict = state_dict["model_state_dict"]
+            sentinel_encoder.load_state_dict(state_dict, strict=False)
+            logger.info("Loaded Sentinel encoder weights")
 
         return build_multimodal_mid_fusion(
             aerial_backbone=aerial_backbone,
