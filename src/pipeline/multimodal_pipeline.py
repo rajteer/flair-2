@@ -389,8 +389,10 @@ class MultimodalTrainEvalPipeline:
 
         logger.info("Starting multimodal fusion train-evaluation pipeline.")
 
-        with mlflow.start_run(run_name=config["mlflow"]["run_name"]):
+        with mlflow.start_run(run_name=config["mlflow"]["run_name"]) as run:
+            logger.info("MLflow run started: %s", run.info.run_id)
             mlflow.log_dict(config, artifact_file="config_resolved.json")
+            logger.info("Logged config to MLflow")
 
             mlflow.log_params(
                 {
@@ -412,6 +414,7 @@ class MultimodalTrainEvalPipeline:
                     "batch_size": config["data"]["batch_size"],
                 }
             )
+            logger.info("Logged parameters to MLflow")
 
             if note := config["mlflow"].get("note"):
                 mlflow.set_tag("note", note)
