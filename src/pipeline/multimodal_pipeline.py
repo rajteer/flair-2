@@ -130,6 +130,8 @@ def _train_epoch_multimodal(
 
         scaler.scale(loss).backward()
 
+        # Step optimizer when we've accumulated enough gradients
+        # Note: last partial batch is handled by (batch_idx + 1) == len(loader) check
         if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
             if max_grad_norm is not None:
                 scaler.unscale_(optimizer)
@@ -137,11 +139,14 @@ def _train_epoch_multimodal(
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
-            if scheduler is not None:
+            # Only step scheduler if this is a true accumulation step
+            # Avoid stepping twice on last batch if it aligns with accumulation
+            if scheduler is not None and (batch_idx + 1) % accumulation_steps == 0:
                 scheduler.step()
 
         total_loss += float(loss_value)
 
+    # Step scheduler for partial last batch if needed (but this is tricky with OneCycleLR)
     return total_loss / len(loader)
 
 
