@@ -205,9 +205,14 @@ class GlobalLocalAttention(nn.Module):
     def pad(self, x: torch.Tensor, ps: int) -> torch.Tensor:
         _, _, H, W = x.size()
         if W % ps != 0:
-            x = functional.pad(x, (0, ps - W % ps), mode="reflect")
+            pad_w = ps - W % ps
+            # Reflect mode requires input size >= pad size; fall back to constant if too small
+            mode = "reflect" if W > pad_w else "constant"
+            x = functional.pad(x, (0, pad_w), mode=mode)
         if H % ps != 0:
-            x = functional.pad(x, (0, 0, 0, ps - H % ps), mode="reflect")
+            pad_h = ps - H % ps
+            mode = "reflect" if H > pad_h else "constant"
+            x = functional.pad(x, (0, 0, 0, pad_h), mode=mode)
         return x
 
     def pad_out(self, x: torch.Tensor) -> torch.Tensor:
