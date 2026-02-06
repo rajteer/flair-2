@@ -342,7 +342,9 @@ class WF(nn.Module):
 
     def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
         """Upsample and fuse decoder features with residual features."""
-        up = functional.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        # Interpolate to match residual size instead of fixed 2x scale
+        target_size = res.shape[2:]
+        up = functional.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
         weights = nn.ReLU()(self.weights)
         fuse_weights = weights / (torch.sum(weights, dim=0) + self.eps)
         out = fuse_weights[0] * self.pre_conv(res) + fuse_weights[1] * up
@@ -389,7 +391,9 @@ class FeatureRefinementHead(nn.Module):
 
     def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
         """Refine fused features using positional and channel attention."""
-        up = functional.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        # Interpolate to match residual size instead of fixed 2x scale
+        target_size = res.shape[2:]
+        up = functional.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
         weights = nn.ReLU()(self.weights)
         fuse_weights = weights / (torch.sum(weights, dim=0) + self.eps)
         out = fuse_weights[0] * self.pre_conv(res) + fuse_weights[1] * up
