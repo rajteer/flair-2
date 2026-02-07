@@ -107,6 +107,7 @@ class MultimodalLateFusion(nn.Module):
         sentinel_resolution: tuple[int, int] = (10, 10),
         sentinel_output_resolution: tuple[int, int] | None = None,
         use_cloud_uncertainty: bool = False,
+        modality_weights: list[float] | None = None,
     ) -> None:
         """Initialize the multimodal late fusion model."""
         super().__init__()
@@ -124,6 +125,16 @@ class MultimodalLateFusion(nn.Module):
         self.sentinel_output_resolution = sentinel_output_resolution
         self.use_cloud_uncertainty = use_cloud_uncertainty
 
+        # Handle modality weights for fixed fusion
+        self.modality_weights = None
+        if modality_weights is not None:
+            # Normalize to sum to 1.0
+            total = sum(modality_weights)
+            if total <= 0:
+                msg = f"Sum of modality_weights must be positive, got {total}"
+                raise ValueError(msg)
+            self.modality_weights = [w / total for w in modality_weights]
+
         # Freeze encoder weights if requested
         if freeze_encoders:
             self._freeze_model(self.aerial_model)
@@ -134,6 +145,11 @@ class MultimodalLateFusion(nn.Module):
         # Initialize to zeros so softmax gives equal weights (0.5, 0.5)
         if fusion_mode == "weighted":
             self.class_weights = nn.Parameter(torch.zeros(num_classes, 2))
+        elif fusion_mode == "fixed_weighted":
+            if self.modality_weights is None or len(self.modality_weights) != 2:
+                msg = "fixed_weighted mode requires exactly 2 modality_weights (aerial, sentinel)"
+                raise ValueError(msg)
+            self.class_weights = None  # type: ignore[assignment]
         elif fusion_mode == "gated":
             # Gated fusion: learn spatially-varying weights from logits
             # Input: aerial_logits (K) + sentinel_logits (K) + optional cloud (1)
@@ -241,6 +257,8 @@ class MultimodalLateFusion(nn.Module):
         # Apply fusion strategy
         if self.fusion_mode == "weighted":
             return self._weighted_fusion(aerial_logits, sentinel_logits_up)
+        if self.fusion_mode == "fixed_weighted":
+            return self._fixed_weighted_fusion(aerial_logits, sentinel_logits_up)
         if self.fusion_mode == "gated":
             return self._gated_fusion(aerial_logits, sentinel_logits_up, cloud_coverage)
         if self.fusion_mode == "concat":
@@ -288,6 +306,30 @@ class MultimodalLateFusion(nn.Module):
         # Reshape for broadcasting: (1, K, 1, 1)
         w_aerial = weights[:, 0].view(1, -1, 1, 1)
         w_sentinel = weights[:, 1].view(1, -1, 1, 1)
+
+        return w_aerial * aerial_logits + w_sentinel * sentinel_logits
+
+    def _fixed_weighted_fusion(
+        self,
+        aerial_logits: torch.Tensor,
+        sentinel_logits: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply fixed weighted fusion (Weighted Geometric Mean of probabilities).
+
+        Args:
+            aerial_logits: Aerial predictions (B, K, H, W).
+            sentinel_logits: Sentinel predictions (B, K, H, W).
+
+        Returns:
+            Weighted combination (B, K, H, W).
+
+        """
+        if self.modality_weights is None:
+            msg = "modality_weights must be set for fixed_weighted fusion"
+            raise ValueError(msg)
+
+        w_aerial = self.modality_weights[0]
+        w_sentinel = self.modality_weights[1]
 
         return w_aerial * aerial_logits + w_sentinel * sentinel_logits
 

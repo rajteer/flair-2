@@ -338,6 +338,13 @@ def train_multimodal(
                     weights.get("sentinel_weights"),
                 )
 
+                # Save fusion weights to MLflow as a JSON artifact
+                weights_json = {
+                    k: v.cpu().tolist() if isinstance(v, torch.Tensor) else v
+                    for k, v in weights.items()
+                }
+                mlflow.log_dict(weights_json, "fusion_weights.json")
+
     return {
         "train_loss": losses_train,
         "val_loss": losses_val,
