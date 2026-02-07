@@ -32,11 +32,14 @@ from src.models.model_builder import (
     build_model,
     build_optimizer,
 )
-from src.models.validation import evaluate
+from src.models.utils import process_segmentation_tensor
+from src.models.validation import _finalize_evaluation, get_evaluation_metrics_dict
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
 from src.utils.mlflow_utils import init_mlflow, log_metrics_to_mlflow, log_model_to_mlflow
+from src.utils.model_stats import compute_model_complexity
 from src.utils.read_yaml import read_yaml
 from src.utils.reproducibility import create_generator, seed_everything, seed_worker
+from src.visualization.mosaic import log_prediction_mosaic_to_mlflow
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +198,87 @@ def _validate_epoch_multimodal(
             preds = outputs.argmax(dim=1)
             miou_metric.update(preds, masks)
 
+            miou_metric.update(preds, masks)
+
     return val_loss / len(loader), miou_metric.compute().item()
+
+
+def _evaluate_multimodal_model(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    num_classes: int,
+    ignore_index: int | None = None,
+    log_eval_metrics: bool = True,
+    log_confusion_matrix: bool = True,
+) -> dict[str, float]:
+    """Evaluate multimodal model and return full metrics dictionary."""
+    model.eval()
+    evaluation_metrics_dict = get_evaluation_metrics_dict(
+        num_classes,
+        device,
+        other_class_index=ignore_index,
+    )
+
+    inference_times = []
+    batch_sizes = []
+
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Evaluating (Full Metrics)", leave=False):
+            # Unpack batch
+            (
+                aerial,
+                sentinel,
+                masks,
+                sp_centroids,
+                sp_encs,
+                sp_month_indices,
+                cloud_masks,
+                sample_ids,
+            ) = batch
+
+            aerial = aerial.to(device)
+            sentinel = sentinel.to(device)
+            masks = masks.to(device)
+            sp_centroids = sp_centroids.to(device)
+            sp_encs = sp_encs.to(device)
+            sp_month_indices = sp_month_indices.to(device)
+            cloud_masks = cloud_masks.to(device) if cloud_masks is not None else None
+
+            start_time = time.perf_counter()
+            outputs = model(
+                aerial,
+                sentinel,
+                sp_centroids=sp_centroids,
+                sp_encs=sp_encs,
+                sp_month_indices=sp_month_indices,
+                cloud_masks=cloud_masks,
+            )
+            batch_time = time.perf_counter() - start_time
+            inference_times.append(batch_time)
+            batch_sizes.append(aerial.shape[0])
+
+            processed_outputs = process_segmentation_tensor(outputs, num_classes)
+
+            for metric in evaluation_metrics_dict.values():
+                metric.update(processed_outputs, masks)
+
+    # Use existing validation logic to finalize and log metrics
+    class_name_mapping = {i: f"class_{i}" for i in range(num_classes)}
+    # Use ignore_index as confusion_other_index if provided, else define a default
+    confusion_other_index = ignore_index if ignore_index is not None else 13
+
+    return _finalize_evaluation(
+        evaluation_metrics_dict,
+        inference_times,
+        batch_sizes,
+        class_name_mapping,
+        confusion_other_index,
+        normalize_confusion_matrix=True,
+        visualization_labels=None,
+        log_eval_metrics=log_eval_metrics,
+        log_confusion_matrix=log_confusion_matrix,
+    )
 
 
 def train_multimodal(
@@ -554,6 +637,17 @@ class MultimodalTrainEvalPipeline:
 
             model.to(device)
             criterion.to(device)
+
+            # Compute and log model complexity (MACs, FLOPs, Params)
+            try:
+                # Use aerial resolution roughly for input size reference
+                aerial_res = tuple(config["model"].get("aerial_resolution", [512, 512]))
+                input_size = (1, config["model"].get("aerial_in_channels", 5), *aerial_res)
+                complexity_metrics = compute_model_complexity(model, input_size)
+                mlflow.log_metrics(complexity_metrics)
+                logger.info("Model Complexity: %s", complexity_metrics)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to compute model complexity: %s", e)
 
             optimizer = build_optimizer(
                 model=model,
