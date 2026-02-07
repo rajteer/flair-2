@@ -244,6 +244,7 @@ def build_model(
             sentinel_model=sentinel_model,
             num_classes=n_classes,
             freeze_encoders=multimodal_config.get("freeze_encoders", True),
+            freeze_encoder_stats=multimodal_config.get("freeze_encoder_stats"),
             fusion_mode=multimodal_config.get("fusion_mode", "weighted"),
             aerial_resolution=tuple(multimodal_config.get("aerial_resolution", [512, 512])),
             sentinel_resolution=tuple(multimodal_config.get("sentinel_resolution", [10, 10])),
