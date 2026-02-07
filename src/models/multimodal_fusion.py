@@ -174,7 +174,8 @@ class MultimodalLateFusion(nn.Module):
             aerial_input: Aerial imagery tensor of shape (B, C, H, W).
             sentinel_input: Sentinel-2 time series of shape (B, T, C, H, W).
             batch_positions: Temporal positions of shape (B, T) for Sentinel model.
-            pad_mask: Padding mask of shape (B, T) indicating valid timesteps.
+            pad_mask: Boolean padding mask of shape (B, T) where True indicates a padded
+                (invalid) timestep to be ignored by the Sentinel model.
             cloud_coverage: Cloud coverage tensor for gated fusion, shape (B, 1, H, W)
                 at Sentinel resolution. Will be upsampled to aerial resolution.
 
@@ -411,6 +412,9 @@ def load_pretrained_multimodal(
 
     def _extract_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
         """Extract a model state_dict from common checkpoint formats."""
+        if isinstance(checkpoint, nn.Module):
+            return checkpoint.state_dict()
+
         if _is_state_dict(checkpoint):
             # Heuristic: raw mapping of parameter-name -> tensor
             if any(torch.is_tensor(v) for v in checkpoint.values()):
@@ -419,6 +423,8 @@ def load_pretrained_multimodal(
             # Nested formats: {'model_state_dict': {...}}, {'state_dict': {...}}, {'model': {...}}, ...
             for key in _DEFAULT_CHECKPOINT_STATE_KEYS:
                 nested = checkpoint.get(key)  # type: ignore[union-attr]
+                if isinstance(nested, nn.Module):
+                    return nested.state_dict()
                 if _is_state_dict(nested) and any(torch.is_tensor(v) for v in nested.values()):
                     return nested  # type: ignore[return-value]
 

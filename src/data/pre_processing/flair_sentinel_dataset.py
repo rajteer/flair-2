@@ -46,6 +46,8 @@ class FlairSentinelDataset(Dataset):
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
         sentinel_scale_factor: float = 10000.0,
+        sentinel_mean: list[float] | None = None,
+        sentinel_std: list[float] | None = None,
     ) -> None:
         """Initialize the Sentinel-only FLAIR-2 dataset.
 
@@ -74,6 +76,11 @@ class FlairSentinelDataset(Dataset):
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
         self.sentinel_scale_factor = sentinel_scale_factor
+        if (sentinel_mean is None) != (sentinel_std is None):
+            msg = "sentinel_mean and sentinel_std must be provided together or omitted."
+            raise ValueError(msg)
+        self.sentinel_mean = sentinel_mean
+        self.sentinel_std = sentinel_std
 
         self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
@@ -187,6 +194,7 @@ class FlairSentinelDataset(Dataset):
             sentinel_tensor = torch.from_numpy(sentinel_patch).float()
             if self.sentinel_scale_factor != 1.0:
                 sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+            sentinel_tensor = self._normalize_sentinel(sentinel_tensor)
             return sentinel_tensor, positions
 
         sp_masks = np.load(sp_masks_path)  # Shape: (T, 2, H, W)
@@ -238,7 +246,31 @@ class FlairSentinelDataset(Dataset):
         sentinel_tensor = torch.from_numpy(sentinel_patch).float()
         if self.sentinel_scale_factor != 1.0:
             sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+        sentinel_tensor = self._normalize_sentinel(sentinel_tensor)
         return sentinel_tensor, month_positions
+
+    def _normalize_sentinel(self, sentinel_tensor: torch.Tensor) -> torch.Tensor:
+        if self.sentinel_mean is None or self.sentinel_std is None:
+            return sentinel_tensor
+
+        mean = torch.tensor(
+            self.sentinel_mean,
+            dtype=sentinel_tensor.dtype,
+            device=sentinel_tensor.device,
+        )
+        std = torch.tensor(
+            self.sentinel_std,
+            dtype=sentinel_tensor.dtype,
+            device=sentinel_tensor.device,
+        )
+        if mean.numel() != sentinel_tensor.shape[1] or std.numel() != sentinel_tensor.shape[1]:
+            msg = (
+                "sentinel_mean/std length must match Sentinel channels. "
+                f"Got mean={mean.numel()}, std={std.numel()}, channels={sentinel_tensor.shape[1]}."
+            )
+            raise ValueError(msg)
+
+        return (sentinel_tensor - mean.view(1, -1, 1, 1)) / (std.view(1, -1, 1, 1) + 1e-8)
 
     def get_class_counts(self) -> torch.Tensor:
         """Calculate the distribution of classes in the dataset at Sentinel resolution.

@@ -145,6 +145,8 @@ class SentinelTrainEvalPipeline:
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=config["data"].get("sentinel_mean"),
+                sentinel_std=config["data"].get("sentinel_std"),
             )
 
             train_dataset = FlairSentinelDataset(
@@ -157,6 +159,8 @@ class SentinelTrainEvalPipeline:
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=config["data"].get("sentinel_mean"),
+                sentinel_std=config["data"].get("sentinel_std"),
             )
 
             val_dataset = FlairSentinelDataset(
@@ -169,6 +173,8 @@ class SentinelTrainEvalPipeline:
                 cloud_snow_cover_threshold=config["data"].get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=config["data"].get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=config["data"].get("sentinel_mean"),
+                sentinel_std=config["data"].get("sentinel_std"),
             )
 
             generator = create_generator(seed)
@@ -303,6 +309,8 @@ class SentinelTrainEvalPipeline:
                             50,
                         ),
                         sentinel_scale_factor=config["data"].get("sentinel_scale_factor", 10000.0),
+                        sentinel_mean=config["data"].get("sentinel_mean"),
+                        sentinel_std=config["data"].get("sentinel_std"),
                     )
                     zone_data_loader = DataLoader(
                         zone_dataset,

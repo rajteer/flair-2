@@ -63,6 +63,8 @@ class FlairMultimodalDataset(Dataset):
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
         sentinel_scale_factor: float = 10000.0,
+        sentinel_mean: list[float] | None = None,
+        sentinel_std: list[float] | None = None,
     ) -> None:
         """Initialize the multimodal FLAIR-2 dataset.
 
@@ -92,6 +94,11 @@ class FlairMultimodalDataset(Dataset):
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
         self.sentinel_scale_factor = sentinel_scale_factor
+        if (sentinel_mean is None) != (sentinel_std is None):
+            msg = "sentinel_mean and sentinel_std must be provided together or omitted."
+            raise ValueError(msg)
+        self.sentinel_mean = sentinel_mean
+        self.sentinel_std = sentinel_std
 
         # Load aerial image and mask paths
         self.features_dict = get_path_mapping(self.image_dir, "IMG_*.tif")
@@ -173,6 +180,29 @@ class FlairMultimodalDataset(Dataset):
 
         return aerial_image, sentinel_data, mask, sample_id, month_positions
 
+    def _normalize_sentinel(self, sentinel_tensor: torch.Tensor) -> torch.Tensor:
+        if self.sentinel_mean is None or self.sentinel_std is None:
+            return sentinel_tensor
+
+        mean = torch.tensor(
+            self.sentinel_mean,
+            dtype=sentinel_tensor.dtype,
+            device=sentinel_tensor.device,
+        )
+        std = torch.tensor(
+            self.sentinel_std,
+            dtype=sentinel_tensor.dtype,
+            device=sentinel_tensor.device,
+        )
+        if mean.numel() != sentinel_tensor.shape[1] or std.numel() != sentinel_tensor.shape[1]:
+            msg = (
+                "sentinel_mean/std length must match Sentinel channels. "
+                f"Got mean={mean.numel()}, std={std.numel()}, channels={sentinel_tensor.shape[1]}."
+            )
+            raise ValueError(msg)
+
+        return (sentinel_tensor - mean.view(1, -1, 1, 1)) / (std.view(1, -1, 1, 1) + 1e-8)
+
     def _load_sentinel_patch(
         self,
         feature_path: Path,
@@ -218,6 +248,7 @@ class FlairMultimodalDataset(Dataset):
             sentinel_tensor = torch.from_numpy(sentinel_patch).float()
             if self.sentinel_scale_factor != 1.0:
                 sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+            sentinel_tensor = self._normalize_sentinel(sentinel_tensor)
             return sentinel_tensor, positions
 
         sp_masks = np.load(sp_masks_path)
@@ -265,6 +296,7 @@ class FlairMultimodalDataset(Dataset):
         sentinel_tensor = torch.from_numpy(sentinel_patch).float()
         if self.sentinel_scale_factor != 1.0:
             sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+        sentinel_tensor = self._normalize_sentinel(sentinel_tensor)
         return sentinel_tensor, month_positions
 
 
@@ -286,7 +318,7 @@ def multimodal_collate_fn(
             - masks: (B, H, W) batched ground truth masks
             - sample_ids: List of sample ID strings
             - month_positions: (B, T_max) padded temporal positions
-            - pad_mask: (B, T_max) boolean mask where True = valid, False = padding
+            - pad_mask: (B, T_max) boolean mask where True = padding (invalid), False = valid
 
     """
     aerial_images = []
@@ -313,13 +345,14 @@ def multimodal_collate_fn(
     h, w = sentinel_list[0].shape[2], sentinel_list[0].shape[3]
 
     sentinel_batch = torch.zeros(batch_size, max_len, channels, h, w)
-    positions_batch = torch.zeros(batch_size, max_len, dtype=torch.long)
+    positions_batch = torch.full((batch_size, max_len), -1, dtype=torch.long)
     pad_mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
 
     for i, (sentinel, positions) in enumerate(zip(sentinel_list, positions_list, strict=True)):
         seq_len = sentinel.shape[0]
         sentinel_batch[i, :seq_len] = sentinel
         positions_batch[i, :seq_len] = positions
-        pad_mask[i, :seq_len] = True  # True = valid (not padding)
+        if seq_len < max_len:
+            pad_mask[i, seq_len:] = True  # True = padding (invalid)
 
     return aerial_batch, sentinel_batch, mask_batch, sample_ids, positions_batch, pad_mask

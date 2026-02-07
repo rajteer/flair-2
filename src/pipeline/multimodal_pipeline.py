@@ -440,6 +440,8 @@ class MultimodalTrainEvalPipeline:
                 cloud_snow_cover_threshold=data_cfg.get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=data_cfg.get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=data_cfg.get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=data_cfg.get("sentinel_mean"),
+                sentinel_std=data_cfg.get("sentinel_std"),
             )
 
             val_dataset = FlairMultimodalDataset(
@@ -455,6 +457,8 @@ class MultimodalTrainEvalPipeline:
                 cloud_snow_cover_threshold=data_cfg.get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=data_cfg.get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=data_cfg.get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=data_cfg.get("sentinel_mean"),
+                sentinel_std=data_cfg.get("sentinel_std"),
             )
 
             test_dataset = FlairMultimodalDataset(
@@ -470,6 +474,8 @@ class MultimodalTrainEvalPipeline:
                 cloud_snow_cover_threshold=data_cfg.get("cloud_snow_cover_threshold", 0.6),
                 cloud_snow_prob_threshold=data_cfg.get("cloud_snow_prob_threshold", 50),
                 sentinel_scale_factor=data_cfg.get("sentinel_scale_factor", 10000.0),
+                sentinel_mean=data_cfg.get("sentinel_mean"),
+                sentinel_std=data_cfg.get("sentinel_std"),
             )
 
             generator = create_generator(seed)
