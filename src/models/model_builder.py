@@ -250,6 +250,7 @@ def build_model(
             sentinel_resolution=tuple(multimodal_config.get("sentinel_resolution", [10, 10])),
             sentinel_output_resolution=sentinel_output_resolution,
             use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
+            modality_weights=multimodal_config.get("modality_weights"),
         )
 
     try:
