@@ -3,6 +3,7 @@ from typing import Any
 
 import segmentation_models_pytorch as smp
 from backbones.utae import UTAE
+import torch
 from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
@@ -351,7 +352,15 @@ def build_optimizer(
     if betas is not None:
         kwargs["betas"] = betas
 
-    return optimizer_class(model.parameters(), **kwargs)
+    parameters = list(model.parameters())
+    if not parameters:
+        # Model has no trainable parameters (e.g. fixed weights + frozen encoders).
+        # Return a dummy optimizer that does nothing, to satisfy the API.
+        # We use a dummy parameter just to initialize the optimizer.
+        dummy_param = nn.Parameter(torch.tensor([0.0]))
+        return optimizer_class([dummy_param], lr=learning_rate)
+
+    return optimizer_class(parameters, **kwargs)
 
 
 def build_lr_scheduler(

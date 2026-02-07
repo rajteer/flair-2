@@ -123,17 +123,22 @@ def _train_epoch_multimodal(
             loss_value = loss.item()
             loss = loss / accumulation_steps
 
-        scaler.scale(loss).backward()
+        if loss.requires_grad:
+            scaler.scale(loss).backward()
 
-        if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
-            if max_grad_norm is not None:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-            if scheduler is not None:
-                scheduler.step()
+            if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(loader):
+                if max_grad_norm is not None:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                if scheduler is not None:
+                    scheduler.step()
+        else:
+            # Model has no trainable parameters (e.g., fixed weighted fusion with frozen encoders)
+            # Just log the loss and continue
+            pass
 
         total_loss += float(loss_value)
 
