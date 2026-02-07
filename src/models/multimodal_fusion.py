@@ -115,7 +115,9 @@ class MultimodalLateFusion(nn.Module):
         self.sentinel_model = sentinel_model
         self.num_classes = num_classes
         self.freeze_encoders = freeze_encoders
-        self.freeze_encoder_stats = freeze_encoders if freeze_encoder_stats is None else freeze_encoder_stats
+        self.freeze_encoder_stats = (
+            freeze_encoders if freeze_encoder_stats is None else freeze_encoder_stats
+        )
         self.fusion_mode = fusion_mode
         self.aerial_resolution = aerial_resolution
         self.sentinel_resolution = sentinel_resolution
@@ -493,7 +495,7 @@ def load_pretrained_multimodal(
 
     def _load(model: nn.Module, checkpoint_path: str, label: str) -> None:
         logger.info("Loading %s model from %s", label, checkpoint_path)
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         raw_state_dict = _extract_state_dict(checkpoint)
         state_dict = _prepare_state_dict(raw_state_dict)
         incompatible = model.load_state_dict(state_dict, strict=strict)
