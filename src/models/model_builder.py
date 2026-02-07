@@ -213,6 +213,32 @@ def build_model(
                 strip_prefixes=multimodal_config.get("checkpoint_strip_prefixes"),
             )
 
+        sentinel_output_resolution = None
+        sentinel_output_resolution_raw = multimodal_config.get("sentinel_output_resolution")
+        if sentinel_output_resolution_raw is not None:
+            if isinstance(sentinel_output_resolution_raw, int):
+                sentinel_output_resolution = (
+                    int(sentinel_output_resolution_raw),
+                    int(sentinel_output_resolution_raw),
+                )
+            elif isinstance(sentinel_output_resolution_raw, (list, tuple)):
+                if len(sentinel_output_resolution_raw) != 2:  # noqa: PLR2004
+                    msg = (
+                        "sentinel_output_resolution must have length 2 (H, W), "
+                        f"got {sentinel_output_resolution_raw!r}"
+                    )
+                    raise ValueError(msg)
+                sentinel_output_resolution = (
+                    int(sentinel_output_resolution_raw[0]),
+                    int(sentinel_output_resolution_raw[1]),
+                )
+            else:
+                msg = (
+                    "sentinel_output_resolution must be an int or a 2-item list/tuple, "
+                    f"got {type(sentinel_output_resolution_raw).__name__}"
+                )
+                raise ValueError(msg)
+
         return MultimodalLateFusion(
             aerial_model=aerial_model,
             sentinel_model=sentinel_model,
@@ -221,6 +247,7 @@ def build_model(
             fusion_mode=multimodal_config.get("fusion_mode", "weighted"),
             aerial_resolution=tuple(multimodal_config.get("aerial_resolution", [512, 512])),
             sentinel_resolution=tuple(multimodal_config.get("sentinel_resolution", [10, 10])),
+            sentinel_output_resolution=sentinel_output_resolution,
             use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
         )
 

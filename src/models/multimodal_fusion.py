@@ -101,9 +101,11 @@ class MultimodalLateFusion(nn.Module):
         num_classes: int,
         *,
         freeze_encoders: bool = True,
+        freeze_encoder_stats: bool | None = None,
         fusion_mode: str = "weighted",
         aerial_resolution: tuple[int, int] = (512, 512),
         sentinel_resolution: tuple[int, int] = (10, 10),
+        sentinel_output_resolution: tuple[int, int] | None = None,
         use_cloud_uncertainty: bool = False,
     ) -> None:
         """Initialize the multimodal late fusion model."""
@@ -112,9 +114,12 @@ class MultimodalLateFusion(nn.Module):
         self.aerial_model = aerial_model
         self.sentinel_model = sentinel_model
         self.num_classes = num_classes
+        self.freeze_encoders = freeze_encoders
+        self.freeze_encoder_stats = freeze_encoders if freeze_encoder_stats is None else freeze_encoder_stats
         self.fusion_mode = fusion_mode
         self.aerial_resolution = aerial_resolution
         self.sentinel_resolution = sentinel_resolution
+        self.sentinel_output_resolution = sentinel_output_resolution
         self.use_cloud_uncertainty = use_cloud_uncertainty
 
         # Freeze encoder weights if requested
@@ -153,6 +158,18 @@ class MultimodalLateFusion(nn.Module):
         else:
             # 'average' mode requires no extra parameters
             self.class_weights = None  # type: ignore[assignment]
+
+    def train(self, mode: bool = True) -> MultimodalLateFusion:
+        """Set training mode.
+
+        When encoders are frozen, it's common to keep them in eval mode during fusion
+        training so BatchNorm running stats don't drift and Dropout stays disabled.
+        """
+        super().train(mode)
+        if mode and self.freeze_encoder_stats:
+            self.aerial_model.eval()
+            self.sentinel_model.eval()
+        return self
 
     @staticmethod
     def _freeze_model(model: nn.Module) -> None:
@@ -195,6 +212,19 @@ class MultimodalLateFusion(nn.Module):
             pad_mask=pad_mask,
         )
 
+        # Optional: if the Sentinel model was trained with a larger context window,
+        # center-crop its logits to the supervised output region before upsampling.
+        if self.sentinel_output_resolution is not None:
+            sentinel_logits = self._center_crop(
+                sentinel_logits,
+                size=self.sentinel_output_resolution,
+            )
+            if cloud_coverage is not None:
+                cloud_coverage = self._center_crop(
+                    cloud_coverage,
+                    size=self.sentinel_output_resolution,
+                )
+
         # Upsample Sentinel logits to aerial resolution
         if sentinel_logits.shape[-2:] != aerial_logits.shape[-2:]:
             sentinel_logits_up = functional.interpolate(
@@ -220,6 +250,20 @@ class MultimodalLateFusion(nn.Module):
 
         msg = f"Unknown fusion_mode: {self.fusion_mode}"
         raise ValueError(msg)
+
+    @staticmethod
+    def _center_crop(x: torch.Tensor, *, size: tuple[int, int]) -> torch.Tensor:
+        """Center-crop a 4D tensor (..., H, W) to a target spatial size."""
+        target_h, target_w = size
+        h, w = x.shape[-2:]
+        if target_h > h or target_w > w:
+            msg = f"Cannot center-crop from {(h, w)} to {(target_h, target_w)}"
+            raise ValueError(msg)
+        if (target_h, target_w) == (h, w):
+            return x
+        top = (h - target_h) // 2
+        left = (w - target_w) // 2
+        return x[..., top : top + target_h, left : left + target_w]
 
     def _weighted_fusion(
         self,

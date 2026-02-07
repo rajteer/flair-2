@@ -59,6 +59,7 @@ class FlairMultimodalDataset(Dataset):
         selected_channels: list[int] | None = None,
         sentinel_patch_size: int = 10,
         *,
+        context_size: int | None = None,
         use_monthly_average: bool = True,
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
@@ -76,6 +77,8 @@ class FlairMultimodalDataset(Dataset):
             num_classes: Number of segmentation classes (default: 13)
             transform: Optional transform to apply to (image, mask) pairs
             sentinel_patch_size: Size of Sentinel-2 patch to extract in Sentinel pixels
+            context_size: Size of the input Sentinel-2 patch to extract (context window).
+                Must be >= sentinel_patch_size. If None, defaults to sentinel_patch_size.
             use_monthly_average: Whether to compute monthly averages from cloudless dates
             cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1)
             cloud_snow_prob_threshold: Minimum probability (0-100) to consider pixel cloudy
@@ -90,6 +93,13 @@ class FlairMultimodalDataset(Dataset):
         self.image_transform = image_transform
         self.selected_channels = selected_channels
         self.sentinel_patch_size = sentinel_patch_size
+        self.context_size = context_size if context_size is not None else sentinel_patch_size
+        if self.context_size < self.sentinel_patch_size:
+            msg = (
+                "context_size must be >= sentinel_patch_size. "
+                f"Got context_size={self.context_size}, sentinel_patch_size={self.sentinel_patch_size}."
+            )
+            raise ValueError(msg)
         self.use_monthly_average = use_monthly_average
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
@@ -229,7 +239,7 @@ class FlairMultimodalDataset(Dataset):
             sp_data,
             centroid_x,
             centroid_y,
-            self.sentinel_patch_size,
+            self.context_size,
         )
 
         sp_masks_path = self.sentinel_masks_dict.get(domain_zone)
