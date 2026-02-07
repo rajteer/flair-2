@@ -209,6 +209,8 @@ def build_model(
                 sentinel_checkpoint=sentinel_checkpoint,
                 aerial_model=aerial_model,
                 sentinel_model=sentinel_model,
+                strict=bool(multimodal_config.get("checkpoint_strict", True)),
+                strip_prefixes=multimodal_config.get("checkpoint_strip_prefixes"),
             )
 
         return MultimodalLateFusion(

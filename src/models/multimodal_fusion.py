@@ -15,6 +15,14 @@ from torch import nn
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_CHECKPOINT_STATE_KEYS: tuple[str, ...] = (
+    "model_state_dict",
+    "state_dict",
+    "model",
+    "net",
+    "weights",
+)
+
 
 class MultiScaleChannelAttention(nn.Module):
     """Multi-Scale Channel Attention Module (MS-CAM).
@@ -371,6 +379,8 @@ def load_pretrained_multimodal(
     sentinel_model: nn.Module,
     *,
     device: torch.device | str = "cpu",
+    strict: bool = True,
+    strip_prefixes: list[str] | None = None,
 ) -> tuple[nn.Module, nn.Module]:
     """Load pre-trained weights into aerial and Sentinel models.
 
@@ -380,24 +390,80 @@ def load_pretrained_multimodal(
         aerial_model: Aerial model instance to load weights into.
         sentinel_model: Sentinel model instance to load weights into.
         device: Device to load checkpoints to.
+        strict: Whether to enforce that checkpoint keys match the model exactly.
+        strip_prefixes: Optional list of prefixes to strip from checkpoint keys
+            (e.g., ['module.'] for DataParallel checkpoints). Prefix stripping is only
+            applied when *all* keys share the prefix.
 
     Returns:
         Tuple of (aerial_model, sentinel_model) with loaded weights.
 
     """
+    if strip_prefixes is None:
+        strip_prefixes = ["module."]
+
+    def _is_state_dict(candidate: object) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        if not candidate:
+            return False
+        return all(isinstance(k, str) for k in candidate)
+
+    def _extract_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
+        """Extract a model state_dict from common checkpoint formats."""
+        if _is_state_dict(checkpoint):
+            # Heuristic: raw mapping of parameter-name -> tensor
+            if any(torch.is_tensor(v) for v in checkpoint.values()):
+                return checkpoint  # type: ignore[return-value]
+
+            # Nested formats: {'model_state_dict': {...}}, {'state_dict': {...}}, {'model': {...}}, ...
+            for key in _DEFAULT_CHECKPOINT_STATE_KEYS:
+                nested = checkpoint.get(key)  # type: ignore[union-attr]
+                if _is_state_dict(nested) and any(torch.is_tensor(v) for v in nested.values()):
+                    return nested  # type: ignore[return-value]
+
+        msg = (
+            "Unsupported checkpoint format. Expected a state_dict mapping or a dict containing one of "
+            f"{list(_DEFAULT_CHECKPOINT_STATE_KEYS)}."
+        )
+        raise ValueError(msg)
+
+    def _strip_prefix(state_dict: dict[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
+        if not state_dict:
+            return state_dict
+        if not all(k.startswith(prefix) for k in state_dict):
+            return state_dict
+        return {k[len(prefix) :]: v for k, v in state_dict.items()}
+
+    def _prepare_state_dict(raw_state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        state_dict = raw_state_dict
+        for prefix in strip_prefixes or []:
+            state_dict = _strip_prefix(state_dict, prefix)
+        return state_dict
+
+    def _load(model: nn.Module, checkpoint_path: str, label: str) -> None:
+        logger.info("Loading %s model from %s", label, checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        raw_state_dict = _extract_state_dict(checkpoint)
+        state_dict = _prepare_state_dict(raw_state_dict)
+        incompatible = model.load_state_dict(state_dict, strict=strict)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            logger.warning(
+                "%s checkpoint load had missing=%d unexpected=%d (strict=%s)",
+                label,
+                len(incompatible.missing_keys),
+                len(incompatible.unexpected_keys),
+                strict,
+            )
+            if incompatible.missing_keys:
+                logger.debug("%s missing keys: %s", label, incompatible.missing_keys)
+            if incompatible.unexpected_keys:
+                logger.debug("%s unexpected keys: %s", label, incompatible.unexpected_keys)
+
     if aerial_checkpoint:
-        logger.info("Loading aerial model from %s", aerial_checkpoint)
-        state_dict = torch.load(aerial_checkpoint, map_location=device)
-        # Handle state_dict wrapped in 'model_state_dict' key
-        if "model_state_dict" in state_dict:
-            state_dict = state_dict["model_state_dict"]
-        aerial_model.load_state_dict(state_dict)
+        _load(aerial_model, aerial_checkpoint, "aerial")
 
     if sentinel_checkpoint:
-        logger.info("Loading Sentinel model from %s", sentinel_checkpoint)
-        state_dict = torch.load(sentinel_checkpoint, map_location=device)
-        if "model_state_dict" in state_dict:
-            state_dict = state_dict["model_state_dict"]
-        sentinel_model.load_state_dict(state_dict)
+        _load(sentinel_model, sentinel_checkpoint, "sentinel")
 
     return aerial_model, sentinel_model

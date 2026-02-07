@@ -25,6 +25,7 @@ from src.data.pre_processing.flair_multimodal_dataset import (
     FlairMultimodalDataset,
     multimodal_collate_fn,
 )
+from src.data.pre_processing.flair_dataset import MultiChannelNormalize
 from src.models.model_builder import (
     build_loss_function,
     build_lr_scheduler,
@@ -410,12 +411,30 @@ class MultimodalTrainEvalPipeline:
 
             # Create datasets
             data_cfg = config["data"]
+
+            norm_cfg = data_cfg.get("normalization")
+            image_transform = None
+            if norm_cfg is not None and norm_cfg.get("enabled", True):
+                image_transform = MultiChannelNormalize(
+                    mean=norm_cfg["mean"],
+                    std=norm_cfg["std"],
+                    scale_to_unit=norm_cfg.get("scale_to_unit"),
+                    elevation_range=tuple(norm_cfg["elevation_range"])
+                    if norm_cfg.get("elevation_range") is not None
+                    else None,
+                    elevation_channel_index=norm_cfg.get("elevation_channel_index"),
+                )
+
+            selected_channels = data_cfg.get("selected_channels")
+
             train_dataset = FlairMultimodalDataset(
                 image_dir=data_cfg["train"]["images"],
                 mask_dir=data_cfg["train"]["masks"],
                 sentinel_dir=data_cfg["train"]["sentinel"],
                 centroids_path=data_cfg["centroids_path"],
                 num_classes=data_cfg["num_classes"],
+                image_transform=image_transform,
+                selected_channels=selected_channels,
                 sentinel_patch_size=data_cfg.get("sentinel_patch_size", 10),
                 use_monthly_average=data_cfg.get("use_monthly_average", True),
                 cloud_snow_cover_threshold=data_cfg.get("cloud_snow_cover_threshold", 0.6),
@@ -429,6 +448,8 @@ class MultimodalTrainEvalPipeline:
                 sentinel_dir=data_cfg["val"]["sentinel"],
                 centroids_path=data_cfg["centroids_path"],
                 num_classes=data_cfg["num_classes"],
+                image_transform=image_transform,
+                selected_channels=selected_channels,
                 sentinel_patch_size=data_cfg.get("sentinel_patch_size", 10),
                 use_monthly_average=data_cfg.get("use_monthly_average", True),
                 cloud_snow_cover_threshold=data_cfg.get("cloud_snow_cover_threshold", 0.6),
@@ -442,6 +463,8 @@ class MultimodalTrainEvalPipeline:
                 sentinel_dir=data_cfg["test"]["sentinel"],
                 centroids_path=data_cfg["centroids_path"],
                 num_classes=data_cfg["num_classes"],
+                image_transform=image_transform,
+                selected_channels=selected_channels,
                 sentinel_patch_size=data_cfg.get("sentinel_patch_size", 10),
                 use_monthly_average=data_cfg.get("use_monthly_average", True),
                 cloud_snow_cover_threshold=data_cfg.get("cloud_snow_cover_threshold", 0.6),

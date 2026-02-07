@@ -55,6 +55,8 @@ class FlairMultimodalDataset(Dataset):
         centroids_path: str,
         num_classes: int = 13,
         transform: Callable[[Tensor, Tensor], tuple[Tensor, Tensor]] | None = None,
+        image_transform: Callable[[Tensor], Tensor] | None = None,
+        selected_channels: list[int] | None = None,
         sentinel_patch_size: int = 10,
         *,
         use_monthly_average: bool = True,
@@ -83,6 +85,8 @@ class FlairMultimodalDataset(Dataset):
         self.sentinel_dir = Path(sentinel_dir)
         self.num_classes = num_classes
         self.transform = transform
+        self.image_transform = image_transform
+        self.selected_channels = selected_channels
         self.sentinel_patch_size = sentinel_patch_size
         self.use_monthly_average = use_monthly_average
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
@@ -147,6 +151,12 @@ class FlairMultimodalDataset(Dataset):
         # Load aerial image (C, H, W) - channels last to channels first
         aerial_image = tifffile.imread(feature_path)
         aerial_image = torch.from_numpy(aerial_image).permute(2, 0, 1).float()
+
+        if self.selected_channels is not None:
+            aerial_image = aerial_image[self.selected_channels, :, :]
+
+        if self.image_transform is not None:
+            aerial_image = self.image_transform(aerial_image)
 
         # Load mask
         mask = tifffile.imread(label_path)
