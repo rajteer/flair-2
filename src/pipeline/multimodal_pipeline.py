@@ -695,18 +695,38 @@ class MultimodalTrainEvalPipeline:
 
             logger.info("Training finished. Evaluating on test set...")
 
-            # Note: evaluate() expects single-input model, for now just compute mIoU
-            test_loss, test_miou = _validate_epoch_multimodal(
+            logger.info("Training finished. Evaluating on test set...")
+
+            # Run full evaluation with confusion matrix and per-class metrics
+            eval_metrics = _evaluate_multimodal_model(
                 model=model,
                 loader=test_loader,
-                criterion=criterion,
                 device=device,
                 num_classes=data_cfg["num_classes"],
                 ignore_index=data_cfg.get("other_class_index"),
+                log_eval_metrics=True,
+                log_confusion_matrix=True,
             )
 
-            logger.info("Test Loss: %.4f, Test mIoU: %.4f", test_loss, test_miou)
-            mlflow.log_metrics({"test_loss": test_loss, "test_miou": test_miou})
+            # Explicitly log per-class metrics to console for visibility
+            logger.info("Per-Class Metrics:")
+            for k, v in eval_metrics.items():
+                if "iou_class_" in k or "f1_class_" in k:
+                    logger.info("  %s: %.4f", k, v)
+
+            # Log prediction mosaic if configured
+            mosaic_cfg = config.get("validation", {}).get("mosaic")
+            if mosaic_cfg and mosaic_cfg.get("enabled", False):
+                logger.info("Generating prediction mosaic...")
+                log_prediction_mosaic_to_mlflow(
+                    model=model,
+                    data_loader=test_loader,
+                    device=device,
+                    num_classes=data_cfg["num_classes"],
+                    zone_name=mosaic_cfg.get("zone_name", "test_zone"),
+                    grid_size=mosaic_cfg.get("grid_size", 10),
+                    patch_size=mosaic_cfg.get("patch_size", 512),
+                )
 
             logger.info("Multimodal pipeline completed successfully.")
 
