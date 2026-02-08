@@ -232,6 +232,16 @@ class FlairMultimodalDataset(Dataset):
         img_filename = feature_path.name
         centroid_x, centroid_y = self.centroids_mapping[img_filename]
 
+        if domain_zone not in self.sentinel_data_dict:
+            available = sorted(self.sentinel_data_dict.keys())
+            preview = ", ".join(available[:5])
+            msg = (
+                f"Sentinel superpatch not found for domain/zone '{domain_zone}'. "
+                f"Example available keys: {preview}{'...' if len(available) > 5 else ''}. "
+                f"Check sentinel_dir structure and naming."
+            )
+            raise KeyError(msg)
+
         sp_data_path = self.sentinel_data_dict[domain_zone]
         sp_data = np.load(sp_data_path, mmap_mode="r")
 

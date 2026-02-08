@@ -97,6 +97,12 @@ class MultimodalLateFusion(nn.Module):
             - list[float] of length 2: global [aerial, sentinel] weights for all classes
             - list[list[float]] of length num_classes: per-class [aerial, sentinel] weights
             - dict[int, list[float]]: per-class weights by class index
+        gate_class_priors: Optional initial aerial priors for gated fusion.
+            These are prior gate values in [0, 1] (higher = trust aerial more).
+            Can be:
+            - float: global aerial prior for all classes
+            - list[float] of length num_classes: per-class priors
+            - dict[int, float]: per-class priors by class index
 
     """
 
@@ -115,6 +121,7 @@ class MultimodalLateFusion(nn.Module):
         use_cloud_uncertainty: bool = False,
         modality_weights: list[float] | None = None,
         init_class_weights: dict[int, list[float]] | list[list[float]] | list[float] | None = None,
+        gate_class_priors: dict[int, float] | list[float] | float | None = None,
     ) -> None:
         """Initialize the multimodal late fusion model."""
         super().__init__()
@@ -171,6 +178,8 @@ class MultimodalLateFusion(nn.Module):
                 nn.Conv2d(num_classes, num_classes, kernel_size=1),
                 nn.Sigmoid(),  # Gate values in [0, 1]
             )
+            if gate_class_priors is not None:
+                self._apply_gate_priors(num_classes, gate_class_priors)
         elif fusion_mode == "concat":
             # Fusion head that takes concatenated logits
             self.fusion_head = nn.Sequential(
@@ -222,6 +231,14 @@ class MultimodalLateFusion(nn.Module):
         norm = torch.clamp(norm, min=1e-6)
         return torch.log(norm)
 
+    @staticmethod
+    def _prior_to_logit(prior: float) -> float:
+        if prior < 0.0 or prior > 1.0:
+            msg = "Gate prior must be within [0, 1]"
+            raise ValueError(msg)
+        clamped = min(max(prior, 1e-6), 1.0 - 1e-6)
+        return float(torch.log(torch.tensor(clamped / (1.0 - clamped))))
+
     @classmethod
     def _build_init_logits(
         cls,
@@ -264,6 +281,43 @@ class MultimodalLateFusion(nn.Module):
             init_logits[idx] = cls._weights_to_logits(weights)
 
         return init_logits
+
+    def _apply_gate_priors(
+        self,
+        num_classes: int,
+        gate_class_priors: dict[int, float] | list[float] | float,
+    ) -> None:
+        if not isinstance(self.gate_network[-2], nn.Conv2d):
+            msg = "Unexpected gate network layout; cannot set gate priors"
+            raise RuntimeError(msg)
+
+        bias = torch.zeros(num_classes, dtype=torch.float32)
+
+        if isinstance(gate_class_priors, (int, float)):
+            bias_value = self._prior_to_logit(float(gate_class_priors))
+            bias[:] = bias_value
+        elif isinstance(gate_class_priors, dict):
+            for key, value in gate_class_priors.items():
+                idx = int(key)
+                if idx < 0 or idx >= num_classes:
+                    msg = f"gate_class_priors index {idx} out of range [0, {num_classes})"
+                    raise ValueError(msg)
+                bias[idx] = self._prior_to_logit(float(value))
+        elif isinstance(gate_class_priors, (list, tuple)):
+            if len(gate_class_priors) != num_classes:
+                msg = (
+                    "gate_class_priors list must have length num_classes "
+                    f"({num_classes}), got {len(gate_class_priors)}"
+                )
+                raise ValueError(msg)
+            for idx, value in enumerate(gate_class_priors):
+                bias[idx] = self._prior_to_logit(float(value))
+        else:
+            msg = "gate_class_priors must be a float, list, or dict"
+            raise ValueError(msg)
+
+        with torch.no_grad():
+            self.gate_network[-2].bias.copy_(bias)
 
     def forward(
         self,

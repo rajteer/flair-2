@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 MAX_ORIGINAL_CLASS = 12
 OTHER_CLASS = 13
+DOMAIN_PATTERN = re.compile(r"^D\d{3}_\d{4}$")
+ZONE_PATTERN = re.compile(r"^Z\d+_[A-Za-z0-9]+$")
 
 
 def load_centroids_mapping(centroids_path: str | Path) -> dict[str, tuple[int, int]]:
@@ -58,8 +60,13 @@ def load_sentinel_superpatch_paths(
     sentinel_dates_dict = {}
 
     for sp_data_path in sentinel_dir.rglob("*_data.npy"):
-        parts = sp_data_path.parts
-        domain_zone = f"{parts[-4]}/{parts[-3]}"
+        domain_zone = _extract_domain_zone_from_sentinel_path(sp_data_path, sentinel_dir)
+        if domain_zone is None:
+            logger.warning(
+                "Skipping Sentinel superpatch with unrecognized path structure: %s",
+                sp_data_path,
+            )
+            continue
 
         sentinel_data_dict[domain_zone] = sp_data_path
 
@@ -82,6 +89,34 @@ def load_sentinel_superpatch_paths(
     return sentinel_data_dict, sentinel_masks_dict, sentinel_dates_dict
 
 
+def _extract_domain_zone_from_sentinel_path(
+    sp_data_path: Path,
+    sentinel_dir: Path,
+) -> str | None:
+    """Extract domain/zone from a sentinel superpatch path.
+
+    Expected structures:
+    - sentinel_dir/DXXX_YYYY/ZZZ_XX/.../*_data.npy
+    - sentinel_dir/.../DXXX_YYYY/ZZZ_XX/.../*_data.npy
+    """
+    try:
+        rel_parts = sp_data_path.relative_to(sentinel_dir).parts
+    except ValueError:
+        rel_parts = sp_data_path.parts
+
+    if len(rel_parts) >= 2:
+        domain, zone = rel_parts[0], rel_parts[1]
+        if DOMAIN_PATTERN.match(domain) and ZONE_PATTERN.match(zone):
+            return f"{domain}/{zone}"
+
+    parts = sp_data_path.parts
+    for i in range(len(parts) - 1):
+        if DOMAIN_PATTERN.match(parts[i]) and i + 1 < len(parts) and ZONE_PATTERN.match(parts[i + 1]):
+            return f"{parts[i]}/{parts[i + 1]}"
+
+    return None
+
+
 def extract_domain_zone(file_path: Path) -> str:
     """Extract domain and zone from file path.
 
@@ -94,7 +129,17 @@ def extract_domain_zone(file_path: Path) -> str:
     """
     parts = file_path.parts
     # Path structure: .../domain/zone/img/IMG_*.tif
-    return f"{parts[-4]}/{parts[-3]}"
+    domain = parts[-4]
+    zone = parts[-3]
+    if DOMAIN_PATTERN.match(domain) and ZONE_PATTERN.match(zone):
+        return f"{domain}/{zone}"
+
+    # Fallback: scan for domain/zone anywhere in the path
+    for i in range(len(parts) - 1):
+        if DOMAIN_PATTERN.match(parts[i]) and ZONE_PATTERN.match(parts[i + 1]):
+            return f"{parts[i]}/{parts[i + 1]}"
+
+    return f"{domain}/{zone}"
 
 
 def parse_sentinel_date(product_name: str) -> tuple[int, int]:

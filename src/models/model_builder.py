@@ -253,6 +253,7 @@ def build_model(
             use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
             modality_weights=multimodal_config.get("modality_weights"),
             init_class_weights=multimodal_config.get("init_class_weights"),
+            gate_class_priors=multimodal_config.get("gate_class_priors"),
         )
 
     try:
