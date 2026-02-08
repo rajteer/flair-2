@@ -8,6 +8,7 @@ model (e.g., TSViT) using learnable per-class modality weights.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
 import torch
 from torch.nn import functional
@@ -91,6 +92,11 @@ class MultimodalLateFusion(nn.Module):
         aerial_resolution: Tuple (H, W) for aerial model output resolution.
         sentinel_resolution: Tuple (H, W) for Sentinel model output resolution.
         use_cloud_uncertainty: Whether to use cloud coverage as input to gated fusion.
+        init_class_weights: Optional initial modality weights for weighted fusion.
+            Can be:
+            - list[float] of length 2: global [aerial, sentinel] weights for all classes
+            - list[list[float]] of length num_classes: per-class [aerial, sentinel] weights
+            - dict[int, list[float]]: per-class weights by class index
 
     """
 
@@ -108,6 +114,7 @@ class MultimodalLateFusion(nn.Module):
         sentinel_output_resolution: tuple[int, int] | None = None,
         use_cloud_uncertainty: bool = False,
         modality_weights: list[float] | None = None,
+        init_class_weights: dict[int, list[float]] | list[list[float]] | list[float] | None = None,
     ) -> None:
         """Initialize the multimodal late fusion model."""
         super().__init__()
@@ -144,7 +151,10 @@ class MultimodalLateFusion(nn.Module):
         # Per-class modality weights: (num_classes, 2) for [aerial, sentinel]
         # Initialize to zeros so softmax gives equal weights (0.5, 0.5)
         if fusion_mode == "weighted":
-            self.class_weights = nn.Parameter(torch.zeros(num_classes, 2))
+            init_logits = torch.zeros(num_classes, 2)
+            if init_class_weights is not None:
+                init_logits = self._build_init_logits(num_classes, init_class_weights)
+            self.class_weights = nn.Parameter(init_logits)
         elif fusion_mode == "fixed_weighted":
             if self.modality_weights is None or len(self.modality_weights) != 2:
                 msg = "fixed_weighted mode requires exactly 2 modality_weights (aerial, sentinel)"
@@ -194,6 +204,66 @@ class MultimodalLateFusion(nn.Module):
         """Freeze all parameters in a model."""
         for param in model.parameters():
             param.requires_grad = False
+
+    @staticmethod
+    def _weights_to_logits(weights: Iterable[float]) -> torch.Tensor:
+        values = list(weights)
+        if len(values) != 2:  # noqa: PLR2004
+            msg = "Each modality weight must have exactly 2 values (aerial, sentinel)"
+            raise ValueError(msg)
+        if any(w < 0 for w in values):
+            msg = "Modality weights must be non-negative"
+            raise ValueError(msg)
+        total = values[0] + values[1]
+        if total <= 0:
+            msg = "Modality weights must sum to a positive value"
+            raise ValueError(msg)
+        norm = torch.tensor([values[0] / total, values[1] / total], dtype=torch.float32)
+        norm = torch.clamp(norm, min=1e-6)
+        return torch.log(norm)
+
+    @classmethod
+    def _build_init_logits(
+        cls,
+        num_classes: int,
+        init_class_weights: dict[int, list[float]] | list[list[float]] | list[float],
+    ) -> torch.Tensor:
+        init_logits = torch.zeros(num_classes, 2)
+
+        def _is_numeric(value: object) -> bool:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+        if isinstance(init_class_weights, dict):
+            for key, weights in init_class_weights.items():
+                idx = int(key)
+                if idx < 0 or idx >= num_classes:
+                    msg = f"init_class_weights index {idx} out of range [0, {num_classes})"
+                    raise ValueError(msg)
+                init_logits[idx] = cls._weights_to_logits(weights)
+            return init_logits
+
+        if not isinstance(init_class_weights, (list, tuple)):
+            msg = "init_class_weights must be a list/tuple or dict"
+            raise ValueError(msg)
+
+        if len(init_class_weights) == 2 and all(_is_numeric(w) for w in init_class_weights):
+            logits = cls._weights_to_logits(init_class_weights)
+            init_logits[:] = logits
+            return init_logits
+
+        if len(init_class_weights) != num_classes:
+            msg = (
+                "init_class_weights list must have length 2 (global) or num_classes "
+                f"({num_classes}), got {len(init_class_weights)}"
+            )
+            raise ValueError(msg)
+
+        for idx, weights in enumerate(init_class_weights):
+            if weights is None:
+                continue
+            init_logits[idx] = cls._weights_to_logits(weights)
+
+        return init_logits
 
     def forward(
         self,

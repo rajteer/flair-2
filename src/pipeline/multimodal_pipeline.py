@@ -201,8 +201,6 @@ def _validate_epoch_multimodal(
             preds = outputs.argmax(dim=1)
             miou_metric.update(preds, masks)
 
-            miou_metric.update(preds, masks)
-
     return val_loss / len(loader), miou_metric.compute().item()
 
 
@@ -214,6 +212,7 @@ def _evaluate_multimodal_model(
     ignore_index: int | None = None,
     log_eval_metrics: bool = True,
     log_confusion_matrix: bool = True,
+    class_name_mapping: dict[int, str] | None = None,
 ) -> dict[str, float]:
     """Evaluate multimodal model and return full metrics dictionary."""
     model.eval()
@@ -226,38 +225,40 @@ def _evaluate_multimodal_model(
     inference_times = []
     batch_sizes = []
 
+    if class_name_mapping is None:
+        class_name_mapping = {i: f"class_{i}" for i in range(num_classes)}
+
     with torch.no_grad():
         for batch in tqdm(loader, desc="Evaluating (Full Metrics)", leave=False):
-            # Unpack batch
-            (
-                aerial,
-                sentinel,
-                masks,
-                sp_centroids,
-                sp_encs,
-                sp_month_indices,
-                cloud_masks,
-                sample_ids,
-            ) = batch
+            aerial = batch[BATCH_AERIAL].to(device)
+            sentinel = batch[BATCH_SENTINEL].to(device)
+            masks = batch[BATCH_MASK].to(device)
+            positions = batch[BATCH_POSITIONS].to(device)
+            pad_mask = batch[BATCH_PAD_MASK].to(device)
 
-            aerial = aerial.to(device)
-            sentinel = sentinel.to(device)
-            masks = masks.to(device)
-            sp_centroids = sp_centroids.to(device)
-            sp_encs = sp_encs.to(device)
-            sp_month_indices = sp_month_indices.to(device)
-            cloud_masks = cloud_masks.to(device) if cloud_masks is not None else None
+            if device.type == "cuda":
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+                outputs = model(
+                    aerial,
+                    sentinel,
+                    batch_positions=positions,
+                    pad_mask=pad_mask,
+                )
+                end_event.record()
+                torch.cuda.synchronize()
+                batch_time = start_event.elapsed_time(end_event) / 1000.0
+            else:
+                start_time = time.perf_counter()
+                outputs = model(
+                    aerial,
+                    sentinel,
+                    batch_positions=positions,
+                    pad_mask=pad_mask,
+                )
+                batch_time = time.perf_counter() - start_time
 
-            start_time = time.perf_counter()
-            outputs = model(
-                aerial,
-                sentinel,
-                sp_centroids=sp_centroids,
-                sp_encs=sp_encs,
-                sp_month_indices=sp_month_indices,
-                cloud_masks=cloud_masks,
-            )
-            batch_time = time.perf_counter() - start_time
             inference_times.append(batch_time)
             batch_sizes.append(aerial.shape[0])
 
@@ -266,8 +267,6 @@ def _evaluate_multimodal_model(
             for metric in evaluation_metrics_dict.values():
                 metric.update(processed_outputs, masks)
 
-    # Use existing validation logic to finalize and log metrics
-    class_name_mapping = {i: f"class_{i}" for i in range(num_classes)}
     # Use ignore_index as confusion_other_index if provided, else define a default
     confusion_other_index = ignore_index if ignore_index is not None else 13
 
@@ -646,7 +645,30 @@ class MultimodalTrainEvalPipeline:
                 # Use aerial resolution roughly for input size reference
                 aerial_res = tuple(config["model"].get("aerial_resolution", [512, 512]))
                 input_size = (1, config["model"].get("aerial_in_channels", 5), *aerial_res)
-                complexity_metrics = compute_model_complexity(model, input_size)
+                sentinel_cfg = config["model"].get("sentinel_model_config", {})
+                sentinel_image_size = sentinel_cfg.get(
+                    "image_size",
+                    data_cfg.get("sentinel_patch_size", 10),
+                )
+                sentinel_seq_len = sentinel_cfg.get("max_seq_len")
+                if sentinel_seq_len is None:
+                    sentinel_seq_len = 12
+                sentinel_in_channels = config["model"].get("sentinel_in_channels")
+                if sentinel_in_channels is None:
+                    sentinel_in_channels = 10
+                sentinel_input_size = (
+                    1,
+                    int(sentinel_seq_len),
+                    int(sentinel_in_channels),
+                    int(sentinel_image_size),
+                    int(sentinel_image_size),
+                )
+
+                complexity_metrics = compute_model_complexity(
+                    model,
+                    input_size,
+                    sentinel_input_size=sentinel_input_size,
+                )
                 mlflow.log_metrics(complexity_metrics)
                 logger.info("Model Complexity: %s", complexity_metrics)
             except Exception as e:  # noqa: BLE001
@@ -698,8 +720,6 @@ class MultimodalTrainEvalPipeline:
 
             logger.info("Training finished. Evaluating on test set...")
 
-            logger.info("Training finished. Evaluating on test set...")
-
             # Run full evaluation with confusion matrix and per-class metrics
             eval_metrics = _evaluate_multimodal_model(
                 model=model,
@@ -709,6 +729,7 @@ class MultimodalTrainEvalPipeline:
                 ignore_index=data_cfg.get("other_class_index"),
                 log_eval_metrics=True,
                 log_confusion_matrix=True,
+                class_name_mapping=None,
             )
 
             # Explicitly log per-class metrics to console for visibility
@@ -717,8 +738,19 @@ class MultimodalTrainEvalPipeline:
                 if "iou_class_" in k or "f1_class_" in k:
                     logger.info("  %s: %.4f", k, v)
 
+            if "total_inference_time" in eval_metrics:
+                logger.info(
+                    "Timing: total_inference_time=%.3fs, avg_time_per_image=%.6fs, avg_time_per_batch=%.6fs",
+                    eval_metrics.get("total_inference_time", 0.0),
+                    eval_metrics.get("avg_time_per_image", 0.0),
+                    eval_metrics.get("avg_time_per_batch", 0.0),
+                )
+
             # Log prediction mosaic if configured
-            mosaic_cfg = config.get("validation", {}).get("mosaic")
+            mosaic_cfg = (
+                config.get("evaluation", {}).get("mosaic")
+                or config.get("validation", {}).get("mosaic")
+            )
             if mosaic_cfg and mosaic_cfg.get("enabled", False):
                 logger.info("Generating prediction mosaic...")
                 log_prediction_mosaic_to_mlflow(

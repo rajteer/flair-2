@@ -252,6 +252,7 @@ def build_model(
             sentinel_output_resolution=sentinel_output_resolution,
             use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
             modality_weights=multimodal_config.get("modality_weights"),
+            init_class_weights=multimodal_config.get("init_class_weights"),
         )
 
     try:
