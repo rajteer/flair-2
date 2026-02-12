@@ -46,6 +46,10 @@ def _log_model_description(
     """Create and log model stats."""
     model_info = ""
 
+    single_sample_inputs = sample_inputs[:1] if sample_inputs is not None else None
+    single_batch_positions = batch_positions[:1] if batch_positions is not None else None
+    single_input_shape = (1, *sample_input_shape[1:])
+
     summary_kwargs: dict[str, Any] = {
         "model": model,
         "device": str(device),
@@ -60,12 +64,12 @@ def _log_model_description(
         "row_settings": ["var_names"],
     }
 
-    if sample_inputs is not None:
-        summary_kwargs["input_data"] = sample_inputs
-        if sample_inputs.ndim == TEMPORAL_MODEL_NDIM and batch_positions is not None:
-            summary_kwargs["batch_positions"] = batch_positions
+    if single_sample_inputs is not None:
+        summary_kwargs["input_data"] = single_sample_inputs
+        if single_sample_inputs.ndim == TEMPORAL_MODEL_NDIM and single_batch_positions is not None:
+            summary_kwargs["batch_positions"] = single_batch_positions
     else:
-        summary_kwargs["input_size"] = sample_input_shape
+        summary_kwargs["input_size"] = single_input_shape
 
     with io.StringIO() as buf:
         model_summary = summary(**summary_kwargs)
@@ -85,8 +89,8 @@ def _log_model_description(
 
     complexity = compute_model_complexity(
         model=model,
-        input_size=sample_input_shape,
-        batch_positions=batch_positions,
+        input_size=single_input_shape,
+        batch_positions=single_batch_positions,
     )
     for k, v in complexity.items():
         mlflow.log_metric(k, float(v))
