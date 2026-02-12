@@ -10,6 +10,7 @@ https://arxiv.org/abs/2109.08937
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import timm
@@ -30,6 +31,8 @@ try:
     from src.models.samba_encoder import SambaEncoder
 except ImportError:
     SambaEncoder = None  # type: ignore[misc, assignment]
+
+logger = logging.getLogger(__name__)
 
 
 class AuxHead(nn.Module):
@@ -147,6 +150,7 @@ class UNetFormer(nn.Module):
         window_size: int = 8,
         num_classes: int = 6,
         in_channels: int = 3,
+        img_size: int | tuple[int, int] | None = None,
         *,
         use_aux_head: bool = False,
         encoder_type: str = "timm",
@@ -155,6 +159,7 @@ class UNetFormer(nn.Module):
         super().__init__()
         self.use_aux_head = use_aux_head
         self.encoder_type = encoder_type
+        self._warned_nhwc_features = False
 
         if encoder_type == "samba":
             if SambaEncoder is None:
@@ -170,7 +175,7 @@ class UNetFormer(nn.Module):
                 drop_path_rate=samba_config.get("drop_path_rate", 0.0),
                 depths=samba_config.get("depths", [3, 4, 6, 3]),
             )
-            encoder_channels = self.backbone.get_channels()
+            encoder_channels = tuple(self.backbone.get_channels())
         else:
             # Select out_indices based on encoder architecture
             # ConvNeXt family has 4 stages (0-3), ResNet family has 5 stages (1-4)
@@ -180,14 +185,30 @@ class UNetFormer(nn.Module):
             else:
                 out_indices = (1, 2, 3, 4)
 
-            self.backbone = timm.create_model(
-                backbone_name,
-                features_only=True,
-                out_indices=out_indices,
-                pretrained=pretrained,
-                in_chans=in_channels,
-            )
-            encoder_channels = self.backbone.feature_info.channels()
+            timm_kwargs: dict[str, Any] = {
+                "features_only": True,
+                "out_indices": out_indices,
+                "pretrained": pretrained,
+                "in_chans": in_channels,
+            }
+            if img_size is not None:
+                timm_kwargs["img_size"] = img_size
+
+            try:
+                self.backbone = timm.create_model(backbone_name, **timm_kwargs)
+            except TypeError as err:
+                if "img_size" not in timm_kwargs:
+                    raise
+                logger.warning(
+                    "Backbone '%s' does not accept img_size=%s. Falling back to default size.",
+                    backbone_name,
+                    img_size,
+                )
+                timm_kwargs.pop("img_size", None)
+                self.backbone = timm.create_model(backbone_name, **timm_kwargs)
+            encoder_channels = tuple(self.backbone.feature_info.channels())
+
+        self.encoder_channels = encoder_channels
 
         self.decoder = Decoder(
             encoder_channels,
@@ -204,9 +225,28 @@ class UNetFormer(nn.Module):
                 num_classes=num_classes,
             )
 
+    def _ensure_nchw(self, feat: torch.Tensor, expected_channels: int) -> torch.Tensor:
+        """Convert NHWC features from timm backbones into NCHW expected by decoder."""
+        if feat.ndim != 4:  # noqa: PLR2004
+            return feat
+        if int(feat.shape[1]) == expected_channels:
+            return feat
+        if int(feat.shape[-1]) == expected_channels:
+            if not self._warned_nhwc_features:
+                logger.warning(
+                    "Backbone returned NHWC features; converting to NCHW for UNetFormer decoder."
+                )
+                self._warned_nhwc_features = True
+            return feat.permute(0, 3, 1, 2).contiguous()
+        return feat
+
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         h, w = x.size()[-2:]
         res1, res2, res3, res4 = self.backbone(x)
+        res1 = self._ensure_nchw(res1, int(self.encoder_channels[0]))
+        res2 = self._ensure_nchw(res2, int(self.encoder_channels[1]))
+        res3 = self._ensure_nchw(res3, int(self.encoder_channels[2]))
+        res4 = self._ensure_nchw(res4, int(self.encoder_channels[3]))
 
         if self.use_aux_head and self.training:
             main_out, aux_features = self.decoder(

@@ -162,6 +162,7 @@ def build_model(
             window_size=unetformer_config.get("window_size", 8),
             num_classes=n_classes,
             in_channels=in_channels,
+            img_size=unetformer_config.get("img_size"),
             use_aux_head=unetformer_config.get("use_aux_head", False),
             encoder_type=unetformer_config.get("encoder_type", "timm"),
             samba_config=unetformer_config.get("samba_config"),
