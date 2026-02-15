@@ -57,30 +57,55 @@ def create_prediction_mosaic(
 
     all_predictions: list[np.ndarray] = []
 
+    def _is_multimodal_batch(batch: object) -> bool:
+        if not isinstance(batch, (list, tuple)) or len(batch) < 2:
+            return False
+        if not torch.is_tensor(batch[0]) or not torch.is_tensor(batch[1]):
+            return False
+        return batch[0].ndim == 4 and batch[1].ndim == TEMPORAL_MODEL_NDIM
+
     with torch.no_grad():
         for batch in data_loader:
-            inputs = batch[BATCH_INDEX_INPUTS].to(device)
-
-            if inputs.ndim == TEMPORAL_MODEL_NDIM:
-                pad_mask = (
-                    batch[BATCH_INDEX_PAD_MASK].to(device)
-                    if len(batch) > BATCH_INDEX_PAD_MASK
-                    else None
-                )
-                batch_positions = (
-                    batch[BATCH_INDEX_POSITIONS].to(device)
-                    if len(batch) > BATCH_INDEX_POSITIONS
-                    else None
-                )
+            if _is_multimodal_batch(batch):
+                aerial = batch[0].to(device)
+                sentinel = batch[1].to(device)
+                batch_positions = batch[4].to(device) if len(batch) > 4 else None
+                pad_mask = batch[5].to(device) if len(batch) > 5 else None
 
                 if batch_positions is not None and pad_mask is not None and supports_pad_mask:
-                    outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+                    outputs = model(
+                        aerial,
+                        sentinel,
+                        batch_positions=batch_positions,
+                        pad_mask=pad_mask,
+                    )
                 elif batch_positions is not None:
-                    outputs = model(inputs, batch_positions=batch_positions)
+                    outputs = model(aerial, sentinel, batch_positions=batch_positions)
+                else:
+                    outputs = model(aerial, sentinel)
+            else:
+                inputs = batch[BATCH_INDEX_INPUTS].to(device)
+
+                if inputs.ndim == TEMPORAL_MODEL_NDIM:
+                    pad_mask = (
+                        batch[BATCH_INDEX_PAD_MASK].to(device)
+                        if len(batch) > BATCH_INDEX_PAD_MASK
+                        else None
+                    )
+                    batch_positions = (
+                        batch[BATCH_INDEX_POSITIONS].to(device)
+                        if len(batch) > BATCH_INDEX_POSITIONS
+                        else None
+                    )
+
+                    if batch_positions is not None and pad_mask is not None and supports_pad_mask:
+                        outputs = model(inputs, batch_positions=batch_positions, pad_mask=pad_mask)
+                    elif batch_positions is not None:
+                        outputs = model(inputs, batch_positions=batch_positions)
+                    else:
+                        outputs = model(inputs)
                 else:
                     outputs = model(inputs)
-            else:
-                outputs = model(inputs)
 
             preds = process_segmentation_tensor(outputs, num_classes=num_classes)
             all_predictions.extend(preds.cpu().numpy())

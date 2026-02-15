@@ -365,3 +365,207 @@ class TestBuildLossFunction:
             kwargs={"class_weights": weights},
         )
         assert loss_fn is not None
+
+
+class TestBuildMultimodalModel:
+    """Tests for MultimodalLateFusion model building."""
+
+    def test_builds_multimodal_late_fusion(self, num_classes: int) -> None:
+        """Should build MultimodalLateFusion model."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+
+        assert isinstance(model, nn.Module)
+        assert hasattr(model, "aerial_model")
+        assert hasattr(model, "sentinel_model")
+        assert hasattr(model, "class_weights")
+
+    def test_multimodal_forward_pass_shape(self, num_classes: int, batch_size: int) -> None:
+        """Forward pass should produce correct output shape."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "aerial_model_type": "Unet",  # Use SMP Unet for simpler testing
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+        model.eval()
+
+        h, w = 64, 64
+        aerial = torch.randn(batch_size, 5, h, w)
+        sentinel = torch.randn(batch_size, 8, 10, 10, 10)  # B, T, C, H, W
+        positions = torch.arange(8).unsqueeze(0).repeat(batch_size, 1)
+
+        with torch.no_grad():
+            output = model(aerial, sentinel, batch_positions=positions, pad_mask=None)
+
+        assert output.shape == (batch_size, num_classes, h, w)
+
+    def test_per_class_weights_are_learnable(self, num_classes: int) -> None:
+        """Per-class fusion weights should be nn.Parameter."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "fusion_mode": "weighted",
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+
+        assert isinstance(model.class_weights, nn.Parameter)
+        assert model.class_weights.shape == (num_classes, 2)
+        assert model.class_weights.requires_grad
+
+    def test_frozen_encoders_have_no_grad(self, num_classes: int) -> None:
+        """Encoder parameters should have requires_grad=False when frozen."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "freeze_encoders": True,
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+
+        # Check aerial model is frozen
+        for param in model.aerial_model.parameters():
+            assert not param.requires_grad
+
+        # Check sentinel model is frozen
+        for param in model.sentinel_model.parameters():
+            assert not param.requires_grad
+
+        # Check fusion weights are trainable
+        assert model.class_weights.requires_grad
+
+    def test_concat_fusion_mode(self, num_classes: int, batch_size: int) -> None:
+        """Concat fusion mode should produce correct output shape."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "fusion_mode": "concat",
+                "aerial_model_type": "Unet",
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+        model.eval()
+
+        h, w = 64, 64
+        aerial = torch.randn(batch_size, 5, h, w)
+        sentinel = torch.randn(batch_size, 8, 10, 10, 10)
+        positions = torch.arange(8).unsqueeze(0).repeat(batch_size, 1)
+
+        with torch.no_grad():
+            output = model(aerial, sentinel, batch_positions=positions, pad_mask=None)
+
+        assert output.shape == (batch_size, num_classes, h, w)
+
+    def test_average_fusion_mode(self, num_classes: int, batch_size: int) -> None:
+        """Average fusion mode should produce correct output shape."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "fusion_mode": "average",
+                "aerial_model_type": "Unet",
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+        model.eval()
+
+        h, w = 64, 64
+        aerial = torch.randn(batch_size, 5, h, w)
+        sentinel = torch.randn(batch_size, 8, 10, 10, 10)
+        positions = torch.arange(8).unsqueeze(0).repeat(batch_size, 1)
+
+        with torch.no_grad():
+            output = model(aerial, sentinel, batch_positions=positions, pad_mask=None)
+
+        assert output.shape == (batch_size, num_classes, h, w)
+
+    def test_attentional_fusion_mode(self, num_classes: int, batch_size: int) -> None:
+        """Attentional (MS-CAM) fusion mode should produce correct output shape."""
+        model = build_model(
+            model_type="MultimodalLateFusion",
+            encoder_name="resnet18",
+            in_channels=5,
+            n_classes=num_classes,
+            model_config={
+                "fusion_mode": "attentional",
+                "aerial_model_type": "Unet",
+                "aerial_model_config": {"backbone_name": "resnet18"},
+                "sentinel_model_config": {
+                    "image_size": 10,
+                    "patch_size": 2,
+                    "max_seq_len": 12,
+                    "dim": 64,
+                },
+            },
+        )
+        model.eval()
+
+        h, w = 64, 64
+        aerial = torch.randn(batch_size, 5, h, w)
+        sentinel = torch.randn(batch_size, 8, 10, 10, 10)
+        positions = torch.arange(8).unsqueeze(0).repeat(batch_size, 1)
+
+        with torch.no_grad():
+            output = model(aerial, sentinel, batch_positions=positions, pad_mask=None)
+
+        assert output.shape == (batch_size, num_classes, h, w)
+        assert hasattr(model, "ms_cam")

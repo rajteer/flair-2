@@ -47,6 +47,7 @@ class FlairSentinelDataset(Dataset):
         *,
         context_size: int | None = None,
         use_monthly_average: bool = True,
+        filter_clouds_snow: bool = True,
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
         sentinel_scale_factor: float = 10000.0,
@@ -68,6 +69,8 @@ class FlairSentinelDataset(Dataset):
                 Use larger values (e.g., 20, 40) to provide spatial context during training.
             use_monthly_average: Whether to compute monthly averages from cloudless dates.
                 Reduces temporal variability and produces up to 12 monthly images.
+            filter_clouds_snow: Whether to filter timesteps using cloud/snow masks.
+                If False, all timesteps are kept.
             cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1).
                 Default 0.6 (60%) as per FLAIR-2 paper.
             cloud_snow_prob_threshold: Minimum probability (0-100) to consider a pixel
@@ -87,10 +90,13 @@ class FlairSentinelDataset(Dataset):
         self.sentinel_patch_size = sentinel_patch_size
         self.context_size = context_size if context_size is not None else sentinel_patch_size
         self.use_monthly_average = use_monthly_average
+        self.filter_clouds_snow = filter_clouds_snow
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
         self.sentinel_scale_factor = sentinel_scale_factor
-
+        if (sentinel_mean is None) != (sentinel_std is None):
+            msg = "sentinel_mean and sentinel_std must be provided together or omitted."
+            raise ValueError(msg)
         if sentinel_mean is not None and sentinel_std is not None:
             self.sentinel_mean = torch.tensor(sentinel_mean, dtype=torch.float32)
             self.sentinel_std = torch.tensor(sentinel_std, dtype=torch.float32)
@@ -116,7 +122,7 @@ class FlairSentinelDataset(Dataset):
             self.sentinel_dates_dict,
         ) = load_sentinel_superpatch_paths(
             self.sentinel_dir,
-            load_masks=True,
+            load_masks=self.filter_clouds_snow,
             load_dates=True,
         )
 
@@ -218,10 +224,11 @@ class FlairSentinelDataset(Dataset):
 
         sp_masks_path = self.sentinel_masks_dict.get(domain_zone)
         if sp_masks_path is None:
-            logger.warning(
-                "Sentinel masks not found for %s, skipping cloud filtering",
-                domain_zone,
-            )
+            if self.filter_clouds_snow:
+                logger.warning(
+                    "Sentinel masks not found for %s, skipping cloud filtering",
+                    domain_zone,
+                )
             # Return day-of-year or month positions as fallback when masks unavailable
             if self.use_monthly_average:
                 # Use month indices (0-11) as fallback
@@ -235,6 +242,7 @@ class FlairSentinelDataset(Dataset):
             sentinel_tensor = torch.from_numpy(sentinel_patch).float()
             if self.sentinel_scale_factor != 1.0:
                 sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
+            sentinel_tensor = self._normalize_sentinel(sentinel_tensor)
             return sentinel_tensor, positions
 
         sp_masks = np.load(sp_masks_path)  # Shape: (T, 2, H, W)
@@ -303,13 +311,23 @@ class FlairSentinelDataset(Dataset):
         sentinel_tensor = torch.from_numpy(sentinel_patch).float()
         if self.sentinel_scale_factor != 1.0:
             sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
-
-        if self.sentinel_mean is not None and self.sentinel_std is not None:
-            mean = self.sentinel_mean[None, :, None, None]
-            std = self.sentinel_std[None, :, None, None]
-            sentinel_tensor = (sentinel_tensor - mean) / std
-
+        sentinel_tensor = self._normalize_sentinel(sentinel_tensor)
         return sentinel_tensor, month_positions
+
+    def _normalize_sentinel(self, sentinel_tensor: torch.Tensor) -> torch.Tensor:
+        if self.sentinel_mean is None or self.sentinel_std is None:
+            return sentinel_tensor
+
+        mean = self.sentinel_mean.to(dtype=sentinel_tensor.dtype, device=sentinel_tensor.device)
+        std = self.sentinel_std.to(dtype=sentinel_tensor.dtype, device=sentinel_tensor.device)
+        if mean.numel() != sentinel_tensor.shape[1] or std.numel() != sentinel_tensor.shape[1]:
+            msg = (
+                "sentinel_mean/std length must match Sentinel channels. "
+                f"Got mean={mean.numel()}, std={std.numel()}, channels={sentinel_tensor.shape[1]}."
+            )
+            raise ValueError(msg)
+
+        return (sentinel_tensor - mean.view(1, -1, 1, 1)) / (std.view(1, -1, 1, 1) + 1e-8)
 
     def get_class_counts(self) -> torch.Tensor:
         """Calculate the distribution of classes in the dataset at Sentinel resolution.

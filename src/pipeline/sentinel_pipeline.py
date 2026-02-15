@@ -408,6 +408,7 @@ class SentinelTrainEvalPipeline:
                         sentinel_mean=config["data"].get("sentinel_mean"),
                         sentinel_std=config["data"].get("sentinel_std"),
                         date_encoding_mode=date_encoding_mode,
+                        downsample_masks=config["data"].get("downsample_masks", True),
                     )
                     zone_data_loader = DataLoader(
                         zone_dataset,

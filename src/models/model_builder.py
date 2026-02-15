@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 import segmentation_models_pytorch as smp
+import torch
 from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
@@ -20,6 +21,7 @@ except ImportError as e:
 from src.models.tsvit import TSViT
 from src.models.tsvit_lookup import TSViTLookup
 from src.models.unetformer import UNetFormer
+from src.models.multimodal_fusion import MultimodalLateFusion, load_pretrained_multimodal
 
 
 def _resolve_attention_type(config: dict[str, Any]) -> str:
@@ -240,15 +242,101 @@ def build_model(
             window_size=unetformer_config.get("window_size", 8),
             num_classes=n_classes,
             in_channels=in_channels,
+            img_size=unetformer_config.get("img_size"),
             use_aux_head=unetformer_config.get("use_aux_head", False),
             encoder_type=unetformer_config.get("encoder_type", "timm"),
             samba_config=unetformer_config.get("samba_config"),
             drop_path_rate=stochastic_depth or 0.0,
-            img_size=unetformer_config.get("img_size"),
         )
         # Store aux_loss_weight as model attribute for training loop access
         model.aux_loss_weight = unetformer_config.get("aux_loss_weight", 0.4)
         return model
+
+    if model_type.upper() == "MULTIMODALLATEFUSION":
+        multimodal_config = model_config or {}
+
+        # Build aerial model (UNetFormer by default)
+        aerial_model_type = multimodal_config.get("aerial_model_type", "UNetFormer")
+        aerial_model_config = multimodal_config.get("aerial_model_config", {})
+        aerial_in_channels = multimodal_config.get("aerial_in_channels", in_channels)
+
+        aerial_model = build_model(
+            model_type=aerial_model_type,
+            encoder_name=aerial_model_config.get("backbone_name", encoder_name),
+            in_channels=aerial_in_channels,
+            n_classes=n_classes,
+            encoder_weights=encoder_weights,
+            model_config=aerial_model_config,
+        )
+
+        # Build Sentinel model (TSViT by default)
+        sentinel_model_type = multimodal_config.get("sentinel_model_type", "TSVIT")
+        sentinel_model_config = multimodal_config.get("sentinel_model_config", {})
+        sentinel_in_channels = multimodal_config.get("sentinel_in_channels", 10)
+
+        sentinel_model = build_model(
+            model_type=sentinel_model_type,
+            encoder_name="",
+            in_channels=sentinel_in_channels,
+            n_classes=n_classes,
+            model_config=sentinel_model_config,
+        )
+
+        # Load pre-trained checkpoints if provided
+        aerial_checkpoint = multimodal_config.get("aerial_checkpoint")
+        sentinel_checkpoint = multimodal_config.get("sentinel_checkpoint")
+
+        if aerial_checkpoint or sentinel_checkpoint:
+            aerial_model, sentinel_model = load_pretrained_multimodal(
+                aerial_checkpoint=aerial_checkpoint,
+                sentinel_checkpoint=sentinel_checkpoint,
+                aerial_model=aerial_model,
+                sentinel_model=sentinel_model,
+                strict=bool(multimodal_config.get("checkpoint_strict", True)),
+                strip_prefixes=multimodal_config.get("checkpoint_strip_prefixes"),
+            )
+
+        sentinel_output_resolution = None
+        sentinel_output_resolution_raw = multimodal_config.get("sentinel_output_resolution")
+        if sentinel_output_resolution_raw is not None:
+            if isinstance(sentinel_output_resolution_raw, int):
+                sentinel_output_resolution = (
+                    int(sentinel_output_resolution_raw),
+                    int(sentinel_output_resolution_raw),
+                )
+            elif isinstance(sentinel_output_resolution_raw, (list, tuple)):
+                if len(sentinel_output_resolution_raw) != 2:  # noqa: PLR2004
+                    msg = (
+                        "sentinel_output_resolution must have length 2 (H, W), "
+                        f"got {sentinel_output_resolution_raw!r}"
+                    )
+                    raise ValueError(msg)
+                sentinel_output_resolution = (
+                    int(sentinel_output_resolution_raw[0]),
+                    int(sentinel_output_resolution_raw[1]),
+                )
+            else:
+                msg = (
+                    "sentinel_output_resolution must be an int or a 2-item list/tuple, "
+                    f"got {type(sentinel_output_resolution_raw).__name__}"
+                )
+                raise ValueError(msg)
+
+        return MultimodalLateFusion(
+            aerial_model=aerial_model,
+            sentinel_model=sentinel_model,
+            num_classes=n_classes,
+            freeze_encoders=multimodal_config.get("freeze_encoders", True),
+            freeze_encoder_stats=multimodal_config.get("freeze_encoder_stats"),
+            fusion_mode=multimodal_config.get("fusion_mode", "weighted"),
+            aerial_resolution=tuple(multimodal_config.get("aerial_resolution", [512, 512])),
+            sentinel_resolution=tuple(multimodal_config.get("sentinel_resolution", [10, 10])),
+            sentinel_output_resolution=sentinel_output_resolution,
+            use_cloud_uncertainty=multimodal_config.get("use_cloud_uncertainty", False),
+            modality_weights=multimodal_config.get("modality_weights"),
+            init_class_weights=multimodal_config.get("init_class_weights"),
+            gate_class_priors=multimodal_config.get("gate_class_priors"),
+        )
 
     try:
         model_class = getattr(smp, model_type)
@@ -390,6 +478,11 @@ def build_optimizer(
 
     if encoder_lr_mult is not None and encoder_lr_mult != 1.0:
         encoder_params, decoder_params = _get_encoder_decoder_params(model)
+        encoder_params = [p for p in encoder_params if p.requires_grad]
+        decoder_params = [p for p in decoder_params if p.requires_grad]
+        if not encoder_params and not decoder_params:
+            dummy_param = nn.Parameter(torch.tensor([0.0]))
+            return optimizer_class([dummy_param], lr=learning_rate)
         encoder_lr = learning_rate * encoder_lr_mult
         param_groups = [
             {"params": encoder_params, "lr": encoder_lr},
@@ -403,7 +496,13 @@ def build_optimizer(
         )
         return optimizer_class(param_groups, **kwargs)
 
-    return optimizer_class(model.parameters(), lr=learning_rate, **kwargs)
+    parameters = [p for p in model.parameters() if p.requires_grad]
+    if not parameters:
+        # Keep training loop API stable when all parameters are frozen.
+        dummy_param = nn.Parameter(torch.tensor([0.0]))
+        return optimizer_class([dummy_param], lr=learning_rate)
+
+    return optimizer_class(parameters, lr=learning_rate, **kwargs)
 
 
 def build_lr_scheduler(
