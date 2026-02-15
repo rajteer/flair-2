@@ -279,6 +279,7 @@ class TrainEvalPipeline:
                 learning_rate=config["training"]["optimizer"]["learning_rate"],
                 weight_decay=config["training"]["optimizer"]["weight_decay"],
                 betas=config["training"]["optimizer"]["betas"],
+                encoder_lr_mult=config["training"]["optimizer"].get("encoder_lr_mult"),
             )
 
             accumulation_steps = config["training"].get("accumulation_steps", 1)
@@ -314,7 +315,7 @@ class TrainEvalPipeline:
                 use_amp=config["training"].get("use_amp", False),
                 log_model=config["training"].get("log_model", True),
                 pruning_callback=pruning_callback,
-                max_grad_norm=config["training"].get("max_grad_norm"),
+                gradient_clip_val=config["training"].get("max_grad_norm"),
             )
 
             logger.info("Training finished. Evaluating the model...")

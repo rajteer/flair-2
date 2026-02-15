@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import warnings
 
 import torch
@@ -22,7 +21,6 @@ class MultiHeadSelfAttention(nn.Module):
 
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = 1.0 / math.sqrt(self.head_dim)
 
         self.qkv = nn.Linear(dim, dim * 3, bias=False)
         self.proj = nn.Sequential(nn.Linear(dim, dim), nn.Dropout(dropout))
@@ -32,28 +30,43 @@ class MultiHeadSelfAttention(nn.Module):
         x: torch.Tensor,
         key_padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Apply multi-head self-attention.
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, dim)
+            key_padding_mask: Optional boolean mask of shape (batch, seq_len)
+                where True indicates positions to ignore
+
+        Returns:
+            Output tensor of shape (batch, seq_len, dim)
+
+        """
         batch, seq_len, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
 
-        def _reshape(t: torch.Tensor) -> torch.Tensor:
-            return (
-                t.view(batch, seq_len, self.num_heads, self.head_dim)
-                .permute(0, 2, 1, 3)
-                .contiguous()
-            )
+        # Reshape to (batch, num_heads, seq_len, head_dim)
+        q = q.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        q = _reshape(q)
-        k = _reshape(k)
-        v = _reshape(v)
-
-        scores = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale
+        # Convert key_padding_mask to attention mask format for SDPA
+        # SDPA expects: True = attend, False = ignore (opposite of key_padding_mask)
+        attn_mask = None
         if key_padding_mask is not None:
-            mask = key_padding_mask.unsqueeze(1).unsqueeze(2)  # B x 1 x 1 x S
-            scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
+            # Expand to (batch, 1, 1, seq_len) for broadcasting
+            attn_mask = ~key_padding_mask.unsqueeze(1).unsqueeze(2)
 
-        attn = scores.softmax(dim=-1)
-        out = torch.einsum("bhij,bhjd->bhid", attn, v)
-        out = out.permute(0, 2, 1, 3).reshape(batch, seq_len, -1)
+        # Use PyTorch's fused scaled_dot_product_attention (FlashAttention when available)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+        )
+
+        out = out.transpose(1, 2).reshape(batch, seq_len, -1)
         return self.proj(out)
 
 
@@ -376,23 +389,36 @@ class TSViTLookup(nn.Module):
             index = torch.bucketize(positions_flat, self.eval_dates)
             index = index.clamp(max=len(self.eval_dates) - 1)
             return self.inference_temporal_pos_embedding[index].reshape(B, T, self.dim)
-        # Direct lookup from training embeddings - require exact matches
+        # Direct lookup from training embeddings - require exact matches for valid positions
         positions_flat = positions.ravel()
-        index = torch.searchsorted(self.train_dates, positions_flat)
+
+        # Mask out padding positions (negative values like -100)
+        valid_mask = positions_flat >= 0
+
+        index = torch.searchsorted(self.train_dates, positions_flat.clamp(min=0))
         index = index.clamp(max=len(self.train_dates) - 1)
 
-        # Verify all positions exactly match train_dates
-        matched_dates = self.train_dates[index]
-        if not torch.all(matched_dates == positions_flat):
-            unmatched = positions_flat[matched_dates != positions_flat]
-            msg = (
-                f"Training positions must exactly match train_dates. "
-                f"Found unmatched dates: {unmatched.unique().tolist()}. "
-                f"Available train_dates: {self.train_dates.tolist()}"
-            )
-            raise ValueError(msg)
+        # Verify valid (non-padding) positions exactly match train_dates
+        if valid_mask.any():
+            valid_positions = positions_flat[valid_mask]
+            valid_indices = index[valid_mask]
+            matched_dates = self.train_dates[valid_indices]
+            if not torch.all(matched_dates == valid_positions):
+                unmatched = valid_positions[matched_dates != valid_positions]
+                msg = (
+                    f"Training positions must exactly match train_dates. "
+                    f"Found unmatched dates: {unmatched.unique().tolist()}. "
+                    f"Available train_dates: {self.train_dates.tolist()}"
+                )
+                raise ValueError(msg)
 
-        return self.temporal_pos_embedding[index].reshape(B, T, self.dim)
+        pos_embeddings = self.temporal_pos_embedding[index].reshape(B, T, self.dim)
+        # Ensure padding positions (negative indices) do not receive a valid date embedding
+        if not valid_mask.all():
+            valid_mask_reshaped = valid_mask.view(B, T)
+            pos_embeddings = pos_embeddings.clone()
+            pos_embeddings[~valid_mask_reshaped] = 0.0
+        return pos_embeddings
 
     def forward(
         self,

@@ -205,14 +205,21 @@ class GlobalLocalAttention(nn.Module):
     def pad(self, x: torch.Tensor, ps: int) -> torch.Tensor:
         _, _, H, W = x.size()
         if W % ps != 0:
-            x = functional.pad(x, (0, ps - W % ps), mode="reflect")
+            pad_w = ps - W % ps
+            # Reflect mode requires input size >= pad size; fall back to constant if too small
+            mode = "reflect" if W > pad_w else "constant"
+            x = functional.pad(x, (0, pad_w), mode=mode)
         if H % ps != 0:
-            x = functional.pad(x, (0, 0, 0, ps - H % ps), mode="reflect")
+            pad_h = ps - H % ps
+            mode = "reflect" if H > pad_h else "constant"
+            x = functional.pad(x, (0, 0, 0, pad_h), mode=mode)
         return x
 
     def pad_out(self, x: torch.Tensor) -> torch.Tensor:
-        x = functional.pad(x, pad=(0, 1, 0, 1), mode="reflect")
-        return x
+        _, _, H, W = x.size()
+        # Use reflect mode only if dimensions are large enough, otherwise use constant
+        mode = "reflect" if H > 1 and W > 1 else "constant"
+        return functional.pad(x, pad=(0, 1, 0, 1), mode=mode)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -260,8 +267,11 @@ class GlobalLocalAttention(nn.Module):
 
         attn = attn[:, :, :H, :W]
 
-        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode="reflect")) + self.attn_y(
-            functional.pad(attn, pad=(0, 1, 0, 0), mode="reflect"),
+        # Use reflect mode only if dimensions are large enough for the padding
+        h_mode = "reflect" if H > 1 else "constant"
+        w_mode = "reflect" if W > 1 else "constant"
+        out = self.attn_x(functional.pad(attn, pad=(0, 0, 0, 1), mode=h_mode)) + self.attn_y(
+            functional.pad(attn, pad=(0, 1, 0, 0), mode=w_mode),
         )
 
         out = out + local
@@ -332,7 +342,9 @@ class WF(nn.Module):
 
     def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
         """Upsample and fuse decoder features with residual features."""
-        up = functional.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        # Interpolate to match residual size instead of fixed 2x scale
+        target_size = res.shape[2:]
+        up = functional.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
         weights = nn.ReLU()(self.weights)
         fuse_weights = weights / (torch.sum(weights, dim=0) + self.eps)
         out = fuse_weights[0] * self.pre_conv(res) + fuse_weights[1] * up
@@ -379,7 +391,9 @@ class FeatureRefinementHead(nn.Module):
 
     def forward(self, x: torch.Tensor, res: torch.Tensor) -> torch.Tensor:
         """Refine fused features using positional and channel attention."""
-        up = functional.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        # Interpolate to match residual size instead of fixed 2x scale
+        target_size = res.shape[2:]
+        up = functional.interpolate(x, size=target_size, mode="bilinear", align_corners=False)
         weights = nn.ReLU()(self.weights)
         fuse_weights = weights / (torch.sum(weights, dim=0) + self.eps)
         out = fuse_weights[0] * self.pre_conv(res) + fuse_weights[1] * up

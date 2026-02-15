@@ -109,11 +109,26 @@ def _extract_domain_zone_from_sentinel_path(
         if DOMAIN_PATTERN.match(domain) and ZONE_PATTERN.match(zone):
             return f"{domain}/{zone}"
 
-    parts = sp_data_path.parts
-    for i in range(len(parts) - 1):
-        if DOMAIN_PATTERN.match(parts[i]) and i + 1 < len(parts) and ZONE_PATTERN.match(parts[i + 1]):
-            return f"{parts[i]}/{parts[i + 1]}"
+    return extract_domain_zone_from_path(sp_data_path)
 
+def extract_domain_zone_from_path(file_path: Path) -> str | None:
+    """Extract domain and zone from file path using pattern matching.
+
+    Searches for domain (D###_####) and zone (Z##_XX) directories in the path.
+    This is more robust than using fixed indices as it works regardless of
+    directory nesting depth.
+
+    Args:
+        file_path: Path to any file in the domain/zone structure
+
+    Returns:
+        String in format "DOMAIN/ZONE" (e.g., "D004_2021/Z14_AU") or None if not found
+
+    """
+    parts = file_path.parts
+    for i in range(len(parts) - 1):
+        if DOMAIN_PATTERN.match(parts[i]) and ZONE_PATTERN.match(parts[i + 1]):
+            return f"{parts[i]}/{parts[i + 1]}"
     return None
 
 
@@ -127,19 +142,11 @@ def extract_domain_zone(file_path: Path) -> str:
         String in format "DOMAIN/ZONE" (e.g., "D004_2021/Z14_AU")
 
     """
-    parts = file_path.parts
-    # Path structure: .../domain/zone/img/IMG_*.tif
-    domain = parts[-4]
-    zone = parts[-3]
-    if DOMAIN_PATTERN.match(domain) and ZONE_PATTERN.match(zone):
-        return f"{domain}/{zone}"
-
-    # Fallback: scan for domain/zone anywhere in the path
-    for i in range(len(parts) - 1):
-        if DOMAIN_PATTERN.match(parts[i]) and ZONE_PATTERN.match(parts[i + 1]):
-            return f"{parts[i]}/{parts[i + 1]}"
-
-    return f"{domain}/{zone}"
+    result = extract_domain_zone_from_path(file_path)
+    if result is None:
+        msg = f"Could not extract domain/zone from path: {file_path}"
+        raise ValueError(msg)
+    return result
 
 
 def parse_sentinel_date(product_name: str) -> tuple[int, int]:
@@ -190,6 +197,47 @@ def parse_sentinel_day_of_year(product_name: str) -> int:
     day = int(date_str[6:8])
 
     return date(year, month, day).timetuple().tm_yday - 1
+
+
+def parse_sentinel_days_from_reference(
+    product_name: str,
+    ref_year: int = 2021,
+    ref_month: int = 5,
+    ref_day: int = 15,
+) -> int:
+    """Compute days difference from reference date (FLAIR-2 style encoding).
+
+    Following FLAIR-2 paper: encodes temporal position as days from a central
+    reference date (default: May 15, 2021). Negative values = before reference,
+    positive values = after reference.
+
+    Args:
+        product_name: Sentinel-2 product name (e.g., "S2B_MSIL2A_20210114T103309_...")
+        ref_year: Reference year (default: 2021)
+        ref_month: Reference month (default: 5 = May)
+        ref_day: Reference day (default: 15)
+
+    Returns:
+        Days difference from reference date (can be negative)
+
+    Raises:
+        ValueError: If date cannot be parsed from product name
+
+    """
+    match = re.search(r"_(\d{8})T", product_name)
+    if match is None:
+        msg = f"Could not extract date from product name: {product_name}"
+        raise ValueError(msg)
+
+    date_str = match.group(1)
+    year = int(date_str[:4])
+    month = int(date_str[4:6])
+    day = int(date_str[6:8])
+
+    ref_date = date(ref_year, ref_month, ref_day)
+    product_date = date(ref_year, month, day)  # Use ref_year for consistency
+
+    return (ref_date - product_date).days
 
 
 def load_sentinel_dates(dates_path: Path) -> list[str]:
@@ -244,24 +292,19 @@ def filter_cloudy_snowy_timesteps(
 
 def compute_monthly_averages(
     sentinel_patch: np.ndarray,
-    masks_patch: np.ndarray,
     product_names: list[str],
-    cloud_snow_cover_threshold: float = 0.6,
-    cloud_snow_prob_threshold: int = 50,
 ) -> tuple[np.ndarray, list[int]]:
-    """Compute monthly averages from cloudless Sentinel-2 timesteps.
+    """Compute monthly averages from pre-filtered Sentinel-2 timesteps.
 
-    Following the FLAIR-2 paper strategy: compute monthly average using
-    cloudless dates. If no cloudless dates are available for a specific
-    month, that month is skipped (resulting in fewer than 12 images).
+    Assumes cloud/snow filtering was already done upstream. Groups timesteps
+    by month and computes the mean for each month.
+
+    Following FLAIR-2 paper: compute monthly average. If no data for a month,
+    that month is skipped (resulting in fewer than 12 images).
 
     Args:
-        sentinel_patch: Sentinel-2 data with shape (T, C, H, W)
-        masks_patch: Cloud/snow masks with shape (T, 2, H, W)
+        sentinel_patch: Pre-filtered Sentinel-2 data with shape (T, C, H, W)
         product_names: List of Sentinel-2 product names (length T)
-        cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1)
-        cloud_snow_prob_threshold: Minimum probability (0-100) to consider pixel
-            as cloudy/snowy
 
     Returns:
         Tuple of:
@@ -269,44 +312,20 @@ def compute_monthly_averages(
         - List of month indices (0-11) corresponding to each averaged timestep
 
     """
-    monthly_timesteps = defaultdict(list)
+    # Group timesteps by (year, month)
+    monthly_timesteps: dict[tuple[int, int], list[int]] = defaultdict(list)
     for t, product_name in enumerate(product_names):
         year, month = parse_sentinel_date(product_name)
         monthly_timesteps[(year, month)].append(t)
 
-    monthly_cloudless = {}
-
-    for (year, month), timesteps in monthly_timesteps.items():
-        cloudless_timesteps = []
-
-        for t in timesteps:
-            max_prob = np.maximum(
-                masks_patch[t, 0, :, :],
-                masks_patch[t, 1, :, :],
-            )
-            total_pixels = masks_patch.shape[2] * masks_patch.shape[3]
-            covered_pixels = np.count_nonzero(
-                max_prob >= cloud_snow_prob_threshold,
-            )
-            coverage_ratio = covered_pixels / total_pixels
-
-            if coverage_ratio < cloud_snow_cover_threshold:
-                cloudless_timesteps.append(t)
-
-        if cloudless_timesteps:
-            monthly_cloudless[(year, month)] = cloudless_timesteps
-
-    # Fallback: if no cloudless timesteps found, use all timesteps grouped by month
-    if not monthly_cloudless:
-        monthly_cloudless = dict(monthly_timesteps)
-
-    sorted_months = sorted(monthly_cloudless.keys())
+    # Sort by (year, month) and compute averages
+    sorted_months = sorted(monthly_timesteps.keys())
     monthly_data_list = []
     month_indices = []
 
     for year_month in sorted_months:
-        timesteps = monthly_cloudless[year_month]
-        year, month = year_month
+        timesteps = monthly_timesteps[year_month]
+        _year, month = year_month
 
         month_data = np.mean(sentinel_patch[timesteps], axis=0)
         monthly_data_list.append(month_data)

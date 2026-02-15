@@ -1,6 +1,7 @@
 """Sentinel-only dataset for FLAIR-2 land cover segmentation experiments."""
 
 import logging
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,8 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from ..dataset_utils import get_path_mapping
+from src.data.dataset_utils import get_path_mapping
+
 from .sentinel_utils import (
     MAX_ORIGINAL_CLASS,
     OTHER_CLASS,
@@ -20,7 +22,8 @@ from .sentinel_utils import (
     load_centroids_mapping,
     load_sentinel_dates,
     load_sentinel_superpatch_paths,
-    parse_sentinel_day_of_year,
+    parse_sentinel_date,
+    parse_sentinel_days_from_reference,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,12 +45,16 @@ class FlairSentinelDataset(Dataset):
         num_classes: int = 13,
         sentinel_patch_size: int = 10,
         *,
+        context_size: int | None = None,
         use_monthly_average: bool = True,
+        filter_clouds_snow: bool = True,
         cloud_snow_cover_threshold: float = 0.6,
         cloud_snow_prob_threshold: int = 50,
         sentinel_scale_factor: float = 10000.0,
         sentinel_mean: list[float] | None = None,
         sentinel_std: list[float] | None = None,
+        date_encoding_mode: str = "days",
+        downsample_masks: bool = True,
     ) -> None:
         """Initialize the Sentinel-only FLAIR-2 dataset.
 
@@ -56,31 +63,49 @@ class FlairSentinelDataset(Dataset):
             sentinel_dir: Directory containing Sentinel-2 superpatch data
             centroids_path: Path to JSON file mapping image IDs to superpatch coordinates
             num_classes: Number of segmentation classes (default: 13)
-            sentinel_patch_size: Size of Sentinel-2 patch to extract in Sentinel pixels.
+            sentinel_patch_size: Size of the output Sentinel-2 patch (center crop).
+            context_size: Size of the input Sentinel-2 patch to extract. Must be >= sentinel_patch_size.
+                If None, defaults to sentinel_patch_size (no extra context).
+                Use larger values (e.g., 20, 40) to provide spatial context during training.
             use_monthly_average: Whether to compute monthly averages from cloudless dates.
                 Reduces temporal variability and produces up to 12 monthly images.
+            filter_clouds_snow: Whether to filter timesteps using cloud/snow masks.
+                If False, all timesteps are kept.
             cloud_snow_cover_threshold: Maximum allowed cloud/snow coverage (0-1).
                 Default 0.6 (60%) as per FLAIR-2 paper.
             cloud_snow_prob_threshold: Minimum probability (0-100) to consider a pixel
                 as cloudy/snowy. Default 50 (50%) as per FLAIR-2 paper.
             sentinel_scale_factor: Factor to divide Sentinel-2 reflectance values by.
                 Default 10000.0 scales reflectance (0-10000) to [0, 1].
-                Set to 1.0 to disable scaling.
+                Set to 1.0 to disable scaling (use with sentinel_mean/std).
+            sentinel_mean: Per-channel means for z-score normalization (after scale_factor).
+                If provided with sentinel_std, applies (x - mean) / std normalization.
+            sentinel_std: Per-channel stds for z-score normalization (after scale_factor).
+                If provided with sentinel_mean, applies (x - mean) / std normalization.
 
         """
         self.mask_dir = Path(mask_dir)
         self.sentinel_dir = Path(sentinel_dir)
         self.num_classes = num_classes
         self.sentinel_patch_size = sentinel_patch_size
+        self.context_size = context_size if context_size is not None else sentinel_patch_size
         self.use_monthly_average = use_monthly_average
+        self.filter_clouds_snow = filter_clouds_snow
         self.cloud_snow_cover_threshold = cloud_snow_cover_threshold
         self.cloud_snow_prob_threshold = cloud_snow_prob_threshold
         self.sentinel_scale_factor = sentinel_scale_factor
         if (sentinel_mean is None) != (sentinel_std is None):
             msg = "sentinel_mean and sentinel_std must be provided together or omitted."
             raise ValueError(msg)
-        self.sentinel_mean = sentinel_mean
-        self.sentinel_std = sentinel_std
+        if sentinel_mean is not None and sentinel_std is not None:
+            self.sentinel_mean = torch.tensor(sentinel_mean, dtype=torch.float32)
+            self.sentinel_std = torch.tensor(sentinel_std, dtype=torch.float32)
+        else:
+            self.sentinel_mean = None
+            self.sentinel_std = None
+
+        self.date_encoding_mode = date_encoding_mode
+        self.downsample_masks = downsample_masks
 
         self.labels_dict = get_path_mapping(self.mask_dir, "MSK_*.tif")
         self.ids = sorted(self.labels_dict.keys())
@@ -97,9 +122,29 @@ class FlairSentinelDataset(Dataset):
             self.sentinel_dates_dict,
         ) = load_sentinel_superpatch_paths(
             self.sentinel_dir,
-            load_masks=True,
+            load_masks=self.filter_clouds_snow,
             load_dates=True,
         )
+
+        original_count = len(self.ids)
+        valid_ids = []
+        for sample_id in self.ids:
+            feature_path = self.features_dict[sample_id]
+            try:
+                domain_zone = extract_domain_zone(feature_path)
+                if domain_zone in self.sentinel_data_dict:
+                    valid_ids.append(sample_id)
+            except ValueError:
+                continue
+
+        self.ids = valid_ids
+        filtered_count = original_count - len(self.ids)
+        if filtered_count > 0:
+            logger.warning(
+                "Filtered %d samples (out of %d) without matching Sentinel data",
+                filtered_count,
+                original_count,
+            )
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -116,7 +161,7 @@ class FlairSentinelDataset(Dataset):
                 - sentinel_data: Tensor with shape (M, C, H, W) where M is the number
                   of months with valid cloudless data (≤12 for single year, can be
                   larger for multi-year datasets)
-                - mask: Tensor of shape (H, W) where H=W=sentinel_patch_size
+                - mask: Tensor of shape (512, 512) - original FLAIR mask resolution
                 - sample_id: String ID of the sample
                 - month_positions: Tensor of shape (M,) with month indices (0-11)
 
@@ -137,14 +182,16 @@ class FlairSentinelDataset(Dataset):
         mask = tifffile.imread(label_path)
         mask = np.where(mask <= MAX_ORIGINAL_CLASS, mask, OTHER_CLASS)
         mask -= 1
-
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0).float()
-        mask_tensor = torch.nn.functional.interpolate(
-            mask_tensor,
-            size=(self.sentinel_patch_size, self.sentinel_patch_size),
-            mode="nearest",
-        )
-        mask = mask_tensor.squeeze().long()
+        if self.downsample_masks:
+            mask_tensor = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0)
+            mask_tensor = torch.nn.functional.interpolate(
+                mask_tensor,
+                size=(self.sentinel_patch_size, self.sentinel_patch_size),
+                mode="nearest",
+            )
+            mask = mask_tensor.squeeze().long()
+        else:
+            mask = torch.from_numpy(mask.copy()).long()
 
         return sentinel_data, mask, sample_id, month_positions
 
@@ -172,25 +219,26 @@ class FlairSentinelDataset(Dataset):
             sp_data,
             centroid_x,
             centroid_y,
-            self.sentinel_patch_size,
+            self.context_size,
         )
 
         sp_masks_path = self.sentinel_masks_dict.get(domain_zone)
         if sp_masks_path is None:
-            logger.warning(
-                "Sentinel masks not found for %s, skipping cloud filtering",
-                domain_zone,
-            )
+            if self.filter_clouds_snow:
+                logger.warning(
+                    "Sentinel masks not found for %s, skipping cloud filtering",
+                    domain_zone,
+                )
             # Return day-of-year or month positions as fallback when masks unavailable
             if self.use_monthly_average:
                 # Use month indices (0-11) as fallback
                 num_timesteps = sentinel_patch.shape[0]
                 positions = torch.arange(num_timesteps) % 12
             else:
-                # Use day-of-year from product names
+                # Use days from reference date (FLAIR-2 style)
                 product_names = load_sentinel_dates(self.sentinel_dates_dict[domain_zone])
-                day_of_year = [parse_sentinel_day_of_year(name) for name in product_names]
-                positions = torch.tensor(day_of_year, dtype=torch.long)
+                days_from_ref = [parse_sentinel_days_from_reference(name) for name in product_names]
+                positions = torch.tensor(days_from_ref, dtype=torch.long)
             sentinel_tensor = torch.from_numpy(sentinel_patch).float()
             if self.sentinel_scale_factor != 1.0:
                 sentinel_tensor = sentinel_tensor / self.sentinel_scale_factor
@@ -229,19 +277,36 @@ class FlairSentinelDataset(Dataset):
             product_names = [product_names[i] for i in valid_timesteps]
             sentinel_patch, month_indices = compute_monthly_averages(
                 sentinel_patch,
-                masks_patch,
                 product_names,
-                self.cloud_snow_cover_threshold,
-                self.cloud_snow_prob_threshold,
             )
-            month_positions = torch.tensor(month_indices, dtype=torch.long)
+            if self.date_encoding_mode == "month":
+                # Use month indices directly (0-11) for TSViT
+                month_positions = torch.tensor(month_indices, dtype=torch.long)
+            else:
+                # Convert month indices to days from reference (FLAIR-2 style) for UTAE
+                ref_month = 5  # May
+                ref_day = 15
+                days_from_ref = []
+                for m in month_indices:
+                    actual_month = m + 1
+                    ref = date(2021, ref_month, ref_day)
+                    target = date(2021, actual_month, 15)
+                    days_from_ref.append((ref - target).days)
+                month_positions = torch.tensor(days_from_ref, dtype=torch.long)
         else:
-            # Extract day-of-year positions for non-averaged sequences
+            # Non-averaged sequences
             product_names = load_sentinel_dates(self.sentinel_dates_dict[domain_zone])
             if len(valid_timesteps) > 0:
                 product_names = [product_names[i] for i in valid_timesteps]
-            day_of_year = [parse_sentinel_day_of_year(name) for name in product_names]
-            month_positions = torch.tensor(day_of_year, dtype=torch.long)
+            if self.date_encoding_mode == "month":
+                # Extract month indices (0-11) for TSViT
+
+                month_indices = [parse_sentinel_date(name)[1] - 1 for name in product_names]
+                month_positions = torch.tensor(month_indices, dtype=torch.long)
+            else:
+                # Use days from reference for UTAE
+                days_from_ref = [parse_sentinel_days_from_reference(name) for name in product_names]
+                month_positions = torch.tensor(days_from_ref, dtype=torch.long)
 
         sentinel_tensor = torch.from_numpy(sentinel_patch).float()
         if self.sentinel_scale_factor != 1.0:
@@ -253,16 +318,8 @@ class FlairSentinelDataset(Dataset):
         if self.sentinel_mean is None or self.sentinel_std is None:
             return sentinel_tensor
 
-        mean = torch.tensor(
-            self.sentinel_mean,
-            dtype=sentinel_tensor.dtype,
-            device=sentinel_tensor.device,
-        )
-        std = torch.tensor(
-            self.sentinel_std,
-            dtype=sentinel_tensor.dtype,
-            device=sentinel_tensor.device,
-        )
+        mean = self.sentinel_mean.to(dtype=sentinel_tensor.dtype, device=sentinel_tensor.device)
+        std = self.sentinel_std.to(dtype=sentinel_tensor.dtype, device=sentinel_tensor.device)
         if mean.numel() != sentinel_tensor.shape[1] or std.numel() != sentinel_tensor.shape[1]:
             msg = (
                 "sentinel_mean/std length must match Sentinel channels. "

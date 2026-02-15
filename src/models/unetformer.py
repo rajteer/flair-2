@@ -155,6 +155,7 @@ class UNetFormer(nn.Module):
         use_aux_head: bool = False,
         encoder_type: str = "timm",
         samba_config: dict[str, Any] | None = None,
+        drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
         self.use_aux_head = use_aux_head
@@ -190,6 +191,7 @@ class UNetFormer(nn.Module):
                 "out_indices": out_indices,
                 "pretrained": pretrained,
                 "in_chans": in_channels,
+                "drop_path_rate": drop_path_rate,
             }
             if img_size is not None:
                 timm_kwargs["img_size"] = img_size
@@ -207,7 +209,6 @@ class UNetFormer(nn.Module):
                 timm_kwargs.pop("img_size", None)
                 self.backbone = timm.create_model(backbone_name, **timm_kwargs)
             encoder_channels = tuple(self.backbone.feature_info.channels())
-
         self.encoder_channels = encoder_channels
 
         self.decoder = Decoder(
