@@ -335,7 +335,10 @@ class Decoder(nn.Module):
         """Run the decoder to produce segmentation logits at size (h, w).
 
         Args:
-            res1..res4: Encoder feature maps from shallow to deep.
+            res1: Shallowest encoder feature map.
+            res2: Intermediate encoder feature map.
+            res3: Deeper encoder feature map.
+            res4: Deepest encoder feature map.
             h: Target output height.
             w: Target output width.
 
