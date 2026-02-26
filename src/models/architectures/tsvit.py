@@ -291,6 +291,17 @@ class TSViT(nn.Module):
         self,
         x: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Split auxiliary metadata channels from the spectral input.
+
+        Args:
+            x: Input tensor of shape (B, T, C, H, W) where the last
+                *temporal_metadata_channels* channels are metadata.
+
+        Returns:
+            Tuple of (spectral_data, metadata) where metadata is ``None``
+            when no metadata channels are configured.
+
+        """
         if not self.temporal_metadata_channels:
             return x, None
 
@@ -347,6 +358,22 @@ class TSViT(nn.Module):
         metadata: torch.Tensor | None,
         device: torch.device,
     ) -> torch.Tensor | None:
+        """Return a boolean padding mask, inferring from metadata if needed.
+
+        If an explicit *pad_mask* is provided it is cast and returned.
+        Otherwise, if metadata is available, timesteps with all-zero
+        metadata are treated as padding.
+
+        Args:
+            pad_mask: Optional explicit mask of shape (B, T).
+            metadata: Optional metadata tensor of shape (B, T, C_m, H, W).
+            device: Target device for the mask.
+
+        Returns:
+            Boolean mask of shape (B, T) or ``None`` if neither source is
+            available.
+
+        """
         if pad_mask is not None:
             return pad_mask.to(dtype=torch.bool, device=device)
         if metadata is None:
@@ -361,6 +388,22 @@ class TSViT(nn.Module):
         batch_size: int,
         time: int,
     ) -> torch.Tensor:
+        """Apply temporal transformer encoding to patch-embedded input.
+
+        Each spatial patch is treated as an independent sequence over time.
+        Learnable class CLS tokens are prepended and used as the output.
+
+        Args:
+            x: Patch-embedded input of shape (B*T, num_patches, C_in).
+            temporal_pos: Position embeddings of shape (B, T, dim).
+            pad_mask: Boolean mask of shape (B, T) for padded timesteps.
+            batch_size: Batch size B.
+            time: Number of timesteps T.
+
+        Returns:
+            Class tokens of shape (B, num_classes, num_patches, dim).
+
+        """
         # temporal_pos is already (B, T, dim) from one-hot encoding
         x = self.to_patch_embedding(x)
         x = x.view(batch_size, self.num_patches, time, self.dim)
@@ -401,6 +444,16 @@ class TSViT(nn.Module):
         tokens: torch.Tensor,
         batch_size: int,
     ) -> torch.Tensor:
+        """Apply spatial transformer and reshape tokens into a segmentation map.
+
+        Args:
+            tokens: Temporal CLS tokens of shape (B, num_classes, num_patches, dim).
+            batch_size: Batch size B.
+
+        Returns:
+            Segmentation logits of shape (B, num_classes, image_size, image_size).
+
+        """
         spatial_tokens = tokens.view(batch_size * self.num_classes, self.num_patches, self.dim)
         spatial_tokens = spatial_tokens + self.space_pos_embedding.expand_as(spatial_tokens)
         spatial_tokens = self.space_dropout(spatial_tokens)

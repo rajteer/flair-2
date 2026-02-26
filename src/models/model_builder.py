@@ -7,21 +7,24 @@ from torch import nn, optim
 from torch.optim import lr_scheduler as lr_schedulers
 from torch.optim.lr_scheduler import LRScheduler
 
-from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
-from src.models.utae_pp import UTAE
+from src.models.architectures.utae_pp import UTAE
+from src.training.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
 
 logger = logging.getLogger(__name__)
 
 try:
-    from src.models.rs3mamba import RS3Mamba, load_pretrained_ckpt
+    from src.models.architectures.rs3mamba import RS3Mamba, load_pretrained_ckpt
 except ImportError as e:
     RS3Mamba = None
     load_pretrained_ckpt = None
     RS3MAMBA_IMPORT_ERROR = e
-from src.models.tsvit import TSViT
-from src.models.tsvit_lookup import TSViTLookup
-from src.models.unetformer import UNetFormer
-from src.models.multimodal_fusion import MultimodalLateFusion, load_pretrained_multimodal
+from src.models.architectures.multimodal_fusion import (
+    MultimodalLateFusion,
+    load_pretrained_multimodal,
+)
+from src.models.architectures.tsvit import TSViT
+from src.models.architectures.tsvit_lookup import TSViTLookup
+from src.models.architectures.unetformer import UNetFormer
 
 
 def _resolve_attention_type(config: dict[str, Any]) -> str:

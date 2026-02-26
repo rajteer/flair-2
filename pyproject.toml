@@ -1,7 +1,7 @@
 [project]
 name = "flair-2"
 version = "0.1.0"
-description = "Add your description here"
+description = "Modular training and evaluation framework for semantic segmentation of aerial and Sentinel-2 satellite imagery (FLAIR-2 dataset)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -41,6 +41,10 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.13.3",
+]
+docs = [
+    "mkdocs-material>=9.6.0",
+    "mkdocstrings[python]>=0.29.0",
 ]
 
 [tool.ruff]

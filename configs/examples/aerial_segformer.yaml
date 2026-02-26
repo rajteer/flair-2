@@ -1,0 +1,205 @@
+# ============================================================================
+# Aerial Segmentation Pipeline — Segformer (mit_b0)
+# ============================================================================
+# This config trains a Segformer model on 5-channel aerial imagery (R, G, B,
+# NIR, Elevation) from the FLAIR-2 dataset. It demonstrates the full aerial
+# pipeline including data augmentation, normalization, and MLflow tracking.
+#
+# Usage:
+#   python -m src.pipeline.pipeline -c configs/examples/aerial_segformer.yaml
+#   # or
+#   ./scripts/run_train_eval.sh configs/examples/aerial_segformer.yaml
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Data Configuration
+# ---------------------------------------------------------------------------
+data:
+  # Paths to your dataset splits. Update these to match your local setup.
+  train:
+    images: ./data/flair_2_aerial_train        # Aerial images (IMG_*.tif)
+    masks:  ./data/flair_2_labels_train        # Segmentation masks (MSK_*.tif)
+    sentinel: ./data/flair_2_sen_train         # Sentinel-2 super-patches (optional, not used here)
+  val:
+    images: ./data/flair_2_aerial_test
+    masks:  ./data/flair_2_labels_test
+    sentinel: ./data/flair_2_sen_test
+  test:
+    images: ./data/flair_2_aerial_test
+    masks:  ./data/flair_2_labels_test
+    sentinel: ./data/flair_2_sen_test
+
+  # Path to JSON mapping aerial patches → Sentinel-2 super-patch coordinates.
+  # Required even if Sentinel data is not used (set use_sentinel: false).
+  centroids_path: ./data/flair-2_centroids_sp_to_patch.json
+
+  # Identifier for dataset version / split (logged to MLflow for traceability)
+  dataset_version: split_40
+
+  # Number of land cover classes (13 in FLAIR-2, including "other")
+  num_classes: 13
+
+  # DataLoader settings
+  batch_size: 8
+  num_workers: 4                # Set to 0 for debugging
+  pin_memory: true              # Speeds up CPU→GPU transfer
+
+  # Aerial image channels to use (0-indexed):
+  #   0=Red, 1=Green, 2=Blue, 3=NIR, 4=Elevation
+  selected_channels: [0, 1, 2, 3, 4]
+
+  # Per-channel normalization statistics.
+  # RGB channels (0-2): scaled to [0,1] then normalized with ImageNet stats.
+  # NIR channel (3): scaled to [0,1] then normalized.
+  # Elevation channel (4): min-max scaled using elevation_range, then normalized.
+  # Use scripts/compute_channel_stats.py to recompute these for your data.
+  normalization:
+    enabled: true
+    mean: [0.485, 0.456, 0.406, 0.409878, 0.068752]
+    std:  [0.229, 0.224, 0.225, 0.155107, 0.118672]
+    scale_to_unit: [true, true, true, true, false]   # false = uses elevation_range instead
+    elevation_range: [0.0, 255.0]                     # Raw elevation min/max (meters)
+    elevation_channel_index: 4                        # Which channel is elevation
+
+  # Class index to ignore during evaluation (FLAIR-2 "other" class)
+  other_class_index: 12
+
+  # Sentinel-2 options (not used for aerial-only pipeline)
+  use_sentinel: false
+
+  # Data augmentation configuration
+  data_augmentation:
+    apply_augmentations: true
+    clamp: true               # Clamp pixel values after augmentation
+    augmentations:
+      # Horizontal and vertical flips
+      hflip:
+        prob: 0.5
+      vflip:
+        prob: 0.5
+      # Random 90° rotations
+      rotation:
+        prob: 0.5
+        angles: [0, 90, 180, 270]
+      # Contrast jittering (multiplicative factor)
+      contrast:
+        prob: 0.5
+        range: [0.8, 1.2]
+      # Brightness jittering (multiplicative factor)
+      brightness:
+        prob: 0.5
+        range: [0.8, 1.2]
+      # Elevation-specific augmentations
+      elevation_shift:
+        prob: 0.5
+        range: [-10.0, 10.0]   # Additive shift (meters)
+      elevation_scale:
+        prob: 0.5
+        range: [0.9, 1.1]       # Multiplicative scaling
+      elevation_dropout:
+        prob: 0.1               # Probability of zeroing out elevation
+        p: 0.1                   # Per-pixel dropout probability
+      # ChessMix: mixes patches in a checkerboard pattern
+      chessmix:
+        prob: 0.5
+        grid_sizes: [4]
+        apply_transforms: true
+        ignore_index: 12         # "Other" class
+        class_counts: []         # Auto-computed if empty
+
+# ---------------------------------------------------------------------------
+# MLflow Experiment Tracking
+# ---------------------------------------------------------------------------
+mlflow:
+  name: aerial-segmentation           # MLflow experiment name
+  run_name: segformer_mit_b0           # Descriptive run name
+  tracking_uri: null                   # null = local ./mlruns directory
+  note: "Segformer baseline with mit_b0 encoder"
+
+  # DagsHub remote tracking (implemented — update with your credentials)
+  dagshub:
+    enabled: false                     # Set to true to use DagsHub
+    repo_owner: your-username          # Your DagsHub username
+    repo_name: flair-2                 # Your DagsHub repository name
+    branch: null                       # null = default branch
+
+# ---------------------------------------------------------------------------
+# Model Configuration
+# ---------------------------------------------------------------------------
+model:
+  # Model architecture. Supported SMP models: Unet, DeepLabV3Plus, Segformer, FPN
+  # Custom models: UNetFormer, RS3Mamba
+  model_type: Segformer
+
+  # Encoder backbone (from timm/SMP). Examples: mit_b0, mit_b1, resnet18,
+  # efficientnet_b0, convnext_tiny, etc.
+  encoder_name: mit_b0
+
+  # Pre-trained weights. "imagenet" or null for random init.
+  encoder_weights: imagenet
+
+  # Output activation (null = raw logits, handled by loss function)
+  activation: null
+
+  # Enable dynamic image sizes for ViT-based encoders
+  dynamic_img_size: false
+
+# ---------------------------------------------------------------------------
+# Training Configuration
+# ---------------------------------------------------------------------------
+training:
+  device: cuda                         # "cuda" or "cpu"
+
+  optimizer:
+    type: AdamW                        # Optimizer type: Adam, AdamW, SGD
+    learning_rate: 0.0001              # Initial learning rate
+    betas: [0.9, 0.95]                 # Adam beta parameters
+    weight_decay: 0.00001              # L2 regularization
+
+  # Learning rate scheduler
+  lr_scheduler:
+    type: ReduceLROnPlateau
+    args:
+      mode: min                        # Monitor: "min" for loss, "max" for mIoU
+      factor: 0.5                      # LR reduction factor
+      patience: 2                      # Epochs to wait before reducing
+      threshold: 0.0001                # Minimum improvement threshold
+
+  epochs: 50                           # Maximum training epochs
+  early_stopping_patience: 5           # Stop after N epochs without improvement
+  early_stopping_criterion: loss       # Monitor: "loss" or "miou"
+
+  # Loss function
+  loss_function:
+    type: LovaszLoss                   # Lovász-Softmax — optimizes IoU directly
+    args:
+      mode: multiclass
+
+# ---------------------------------------------------------------------------
+# Experiment Reproducibility
+# ---------------------------------------------------------------------------
+experiment:
+  seed: 42                             # Random seed for all RNGs
+  deterministic: true                  # Use deterministic CUDA algorithms
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+evaluation:
+  log_confusion_matrix: true           # Log confusion matrix to MLflow
+  log_comparison: true                 # Log prediction comparison mosaics
+  log_sample_ids:                      # Specific samples for visualization
+    - "006512"
+    - "006975"
+
+# ---------------------------------------------------------------------------
+# Visualization
+# ---------------------------------------------------------------------------
+visualization:
+  language: en                         # "en" for English, "pl" for Polish
+  labels:
+    ground_truth: Ground Truth
+    prediction: Prediction
+    predicted_class: Predicted Class
+    actual_class: Actual Class
+    confusion_matrix_title: Confusion Matrix

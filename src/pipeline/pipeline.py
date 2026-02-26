@@ -20,8 +20,8 @@ from src.models.model_builder import (
     build_model,
     build_optimizer,
 )
-from src.models.train import train
-from src.models.validation import evaluate
+from src.training.train import train
+from src.training.validation import evaluate
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
 from src.utils.mlflow_utils import init_mlflow
 from src.utils.read_yaml import read_yaml

@@ -1,0 +1,158 @@
+# ============================================================================
+# Optuna Hyperparameter Optimization — Aerial Models
+# ============================================================================
+# This config defines the search space for hyperparameter optimization
+# of aerial segmentation models. It is used ALONGSIDE a base training
+# config (e.g., aerial_segformer.yaml).
+#
+# Usage:
+#   python -m src.pipeline.optimization \
+#       -c configs/examples/aerial_segformer.yaml \
+#       -o configs/examples/optimization_aerial.yaml
+#
+# The optimization pipeline:
+#   1. Creates an Optuna study
+#   2. For each trial, samples hyperparameters from the search space
+#   3. Overrides the base config with sampled values
+#   4. Runs a shortened training (n_epochs) and reports the metric
+#   5. Logs all trials to MLflow and saves the best configuration
+# ============================================================================
+
+optimization:
+  # Study configuration
+  study_name: flair-2-hyperparam-search  # Optuna study name (for resuming)
+  n_trials: 10                           # Number of optimization trials
+  n_epochs: 2                            # Override epochs per trial (shorter for speed)
+  direction: minimize                    # "minimize" (loss) or "maximize" (mIoU)
+
+  # ---------------------------------------------------------------------------
+  # Global Search Space
+  # ---------------------------------------------------------------------------
+  # Each entry defines a hyperparameter to optimize.
+  # The "name" field uses dot-notation to reference the config path.
+  #
+  # Supported types:
+  #   - float:       continuous range [low, high], optional log=true
+  #   - int:         integer range [low, high]
+  #   - categorical: discrete set of choices
+  search_space:
+    # Learning rate (log-uniform sampling)
+    - name: training.optimizer.learning_rate
+      type: float
+      low: 1.0e-5
+      high: 1.0e-2
+      log: true
+
+    # Weight decay
+    - name: training.optimizer.weight_decay
+      type: float
+      low: 1.0e-6
+      high: 1.0e-3
+      log: true
+
+    # Encoder backbone selection
+    - name: model.encoder_name
+      type: categorical
+      choices:
+        - mit_b0
+        - mit_b1
+        - resnet18
+
+    # Stochastic depth (drop path rate)
+    - name: model.stochastic_depth
+      type: float
+      low: 0.0
+      high: 0.5
+
+    # Data augmentation probabilities
+    - name: data.data_augmentation.augmentations.hflip.prob
+      type: float
+      low: 0.0
+      high: 1.0
+
+    - name: data.data_augmentation.augmentations.vflip.prob
+      type: float
+      low: 0.0
+      high: 1.0
+
+    - name: data.data_augmentation.augmentations.rotation.prob
+      type: float
+      low: 0.0
+      high: 1.0
+
+    - name: data.data_augmentation.augmentations.contrast.prob
+      type: float
+      low: 0.0
+      high: 1.0
+
+    - name: data.data_augmentation.augmentations.brightness.prob
+      type: float
+      low: 0.0
+      high: 1.0
+
+    - name: data.data_augmentation.augmentations.chessmix.prob
+      type: float
+      low: 0.0
+      high: 1.0
+
+  # ---------------------------------------------------------------------------
+  # Model-Specific Search Spaces
+  # ---------------------------------------------------------------------------
+  # These are applied ONLY when model.model_type matches the key (case-insensitive).
+  # Parameters are placed under model.model_config.* to be forwarded to the builder.
+  model_specific_search_space:
+    # SMP Unet parameters
+    unet:
+      - name: model.model_config.decoder_channels
+        type: categorical
+        choices:
+          - [256, 128, 64, 32, 16]
+          - [128, 64, 32, 16, 8]
+          - [512, 256, 128, 64, 32]
+      - name: model.model_config.decoder_attention_type
+        type: categorical
+        choices:
+          - null                         # No attention
+          - scse                         # Squeeze & Excitation
+
+    # SMP Segformer parameters
+    segformer:
+      - name: model.model_config.decoder_segmentation_channels
+        type: int
+        low: 128
+        high: 512
+
+    # SMP DeepLabV3+ parameters
+    deeplabv3plus:
+      - name: model.model_config.decoder_channels
+        type: int
+        low: 128
+        high: 512
+
+    # UNetFormer parameters
+    unetformer:
+      - name: model.model_config.decode_channels
+        type: int
+        low: 32
+        high: 128
+      - name: model.model_config.dropout
+        type: float
+        low: 0.0
+        high: 0.5
+      - name: model.model_config.window_size
+        type: categorical
+        choices: [4, 8, 16]
+
+    # RS3Mamba parameters
+    rs3mamba:
+      - name: model.model_config.decode_channels
+        type: int
+        low: 32
+        high: 128
+      - name: model.model_config.dropout
+        type: float
+        low: 0.0
+        high: 0.5
+      - name: model.model_config.window_size
+        type: categorical
+        choices: [4, 8, 16]

@@ -7,7 +7,6 @@ the MultimodalLateFusion model architecture.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import re
 import time
@@ -15,20 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from tqdm import tqdm
-
 import mlflow
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import LRScheduler, ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchmetrics.classification import MulticlassJaccardIndex
+from tqdm import tqdm
 
+from src.data.pre_processing.flair_dataset import MultiChannelNormalize
 from src.data.pre_processing.flair_multimodal_dataset import (
     FlairMultimodalDataset,
     multimodal_collate_fn,
 )
-from src.data.pre_processing.flair_dataset import MultiChannelNormalize
 from src.models.model_builder import (
     build_loss_function,
     build_lr_scheduler,
@@ -36,9 +34,9 @@ from src.models.model_builder import (
     build_optimizer,
 )
 from src.models.utils import process_segmentation_tensor
-from src.models.validation import _finalize_evaluation, get_evaluation_metrics_dict
+from src.training.validation import _finalize_evaluation, get_evaluation_metrics_dict
 from src.utils.logging_utils import LOG_FORMATTER, setup_logging
-from src.utils.mlflow_utils import init_mlflow, log_metrics_to_mlflow, log_model_to_mlflow
+from src.utils.mlflow_utils import init_mlflow, log_metrics_to_mlflow
 from src.utils.model_stats import compute_model_complexity
 from src.utils.read_yaml import read_yaml
 from src.utils.reproducibility import create_generator, seed_everything, seed_worker
@@ -747,10 +745,9 @@ class MultimodalTrainEvalPipeline:
                 )
 
             # Log prediction mosaic if configured
-            mosaic_cfg = (
-                config.get("evaluation", {}).get("mosaic")
-                or config.get("validation", {}).get("mosaic")
-            )
+            mosaic_cfg = config.get("evaluation", {}).get("mosaic") or config.get(
+                "validation", {}
+            ).get("mosaic")
             if mosaic_cfg and mosaic_cfg.get("enabled", False):
                 logger.info("Generating prediction mosaic...")
                 log_prediction_mosaic_to_mlflow(

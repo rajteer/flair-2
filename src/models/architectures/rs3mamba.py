@@ -29,7 +29,7 @@ from src.models.common_blocks import (
     Mlp,
     SeparableConvBN,
 )
-from src.models.vssm_encoder import VSSMEncoder
+from src.models.encoders.vssm_encoder import VSSMEncoder
 
 logger = logging.getLogger(__name__)
 
