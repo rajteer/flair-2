@@ -1,0 +1,154 @@
+# ============================================================================
+# Aerial Segmentation Pipeline — DeepLabV3+ (EfficientNet-B5)
+# ============================================================================
+# This config trains a DeepLabV3+ model with an EfficientNet-B5 encoder.
+# It demonstrates:
+#   - A heavier encoder with better feature extraction
+#   - CombinedDiceFocalLoss with class weights for handling class imbalance
+#   - OneCycleLR scheduler for super-convergence
+#
+# DeepLabV3+ uses Atrous Spatial Pyramid Pooling (ASPP) for multi-scale
+# feature aggregation, making it effective for objects at different scales.
+#
+# Usage:
+#   python -m src.pipeline.pipeline -c configs/examples/aerial_deeplabv3plus.yaml
+# ============================================================================
+
+data:
+  train:
+    images: ./data/flair_2_aerial_train
+    masks:  ./data/flair_2_labels_train
+    sentinel: ./data/flair_2_sen_train
+  val:
+    images: ./data/flair_2_aerial_test
+    masks:  ./data/flair_2_labels_test
+    sentinel: ./data/flair_2_sen_test
+  test:
+    images: ./data/flair_2_aerial_test
+    masks:  ./data/flair_2_labels_test
+    sentinel: ./data/flair_2_sen_test
+
+  centroids_path: ./data/flair-2_centroids_sp_to_patch.json
+  dataset_version: split_40
+  num_classes: 13
+  batch_size: 4                   
+  num_workers: 4
+  pin_memory: true
+  selected_channels: [0, 1, 2, 3, 4]
+
+  normalization:
+    enabled: true
+    mean: [0.485, 0.456, 0.406, 0.409878, 0.068752]
+    std:  [0.229, 0.224, 0.225, 0.155107, 0.118672]
+    scale_to_unit: [true, true, true, true, false]
+    elevation_range: [0.0, 255.0]
+    elevation_channel_index: 4
+
+  other_class_index: 12
+  use_sentinel: false
+
+  data_augmentation:
+    apply_augmentations: true
+    clamp: true
+    augmentations:
+      hflip:
+        prob: 0.5
+      vflip:
+        prob: 0.5
+      rotation:
+        prob: 0.5
+        angles: [0, 90, 180, 270]
+      contrast:
+        prob: 0.5
+        range: [0.8, 1.2]
+      brightness:
+        prob: 0.5
+        range: [0.8, 1.2]
+      elevation_shift:
+        prob: 0.5
+        range: [-10.0, 10.0]
+      elevation_scale:
+        prob: 0.5
+        range: [0.9, 1.1]
+      elevation_dropout:
+        prob: 0.1
+        p: 0.1
+      chessmix:
+        prob: 0.5
+        grid_sizes: [4]
+        apply_transforms: true
+        ignore_index: 12
+        class_counts: []
+
+mlflow:
+  name: aerial-segmentation
+  run_name: deeplabv3plus_efficientnet_b5
+  tracking_uri: null
+  note: "DeepLabV3+ with EfficientNet-B5, CombinedDiceFocalLoss, OneCycleLR"
+  dagshub:
+    enabled: false
+    repo_owner: your-username
+    repo_name: flair-2
+    branch: null
+
+model:
+  model_type: DeepLabV3Plus
+  encoder_name: efficientnet_b5
+  encoder_weights: imagenet
+  activation: null
+  dynamic_img_size: false
+
+  # DeepLabV3+-specific hyperparameters
+  model_config:
+    decoder_channels: 256           # ASPP output channels
+
+training:
+  device: cuda
+  optimizer:
+    type: AdamW
+    learning_rate: 0.0006            # Higher peak LR for OneCycleLR
+    betas: [0.9, 0.999]
+    weight_decay: 0.01
+
+  # OneCycleLR: ramps LR up then down over training ("super-convergence")
+  lr_scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 0.0006                 # Peak learning rate (matches optimizer LR)
+      pct_start: 0.3                 # Fraction of training for warmup phase
+      anneal_strategy: cos           # "cos" or "linear"
+      div_factor: 25.0               # initial_lr = max_lr / div_factor
+      final_div_factor: 10000.0      # final_lr = initial_lr / final_div_factor
+
+  epochs: 50
+  early_stopping_patience: 8
+  early_stopping_criterion: miou     # Monitor mIoU for early stopping
+
+  # Combined Dice + Focal loss for handling class imbalance.
+  # Class weights can be computed using scripts/compute_class_weights.py.
+  loss_function:
+    type: CombinedDiceFocalLoss
+    args:
+      dice_weight: 0.5              # Weight for Dice component
+      focal_weight: 0.5             # Weight for Focal component
+      # class_weights: [1.0, ...]   # Optional per-class weights (length = num_classes)
+
+experiment:
+  seed: 42
+  deterministic: true
+
+evaluation:
+  log_confusion_matrix: true
+  log_comparison: true
+  log_sample_ids:
+    - "006512"
+    - "006975"
+
+visualization:
+  language: en
+  labels:
+    ground_truth: Ground Truth
+    prediction: Prediction
+    predicted_class: Predicted Class
+    actual_class: Actual Class
+    confusion_matrix_title: Confusion Matrix

@@ -1,0 +1,112 @@
+# ============================================================================
+# Sentinel-2 Pipeline — TSViT (Temporal-Spatial Vision Transformer)
+# ============================================================================
+# This config trains a TSViT model on Sentinel-2 time series data.
+# TSViT processes satellite image time series using separate temporal and
+# spatial transformer encoders, making it effective for capturing both
+# temporal patterns and spatial structure in multi-spectral data.
+#
+# Reference: Tarasiou et al., "ViTs for SITS: Vision Transformers for
+#            Satellite Image Time Series" (CVPR 2023)
+#
+# Usage:
+#   python -m src.pipeline.sentinel_pipeline -c configs/examples/sentinel_tsvit.yaml
+# ============================================================================
+
+data:
+  train:
+    masks:    ./data/flair_2_labels_train
+    sentinel: ./data/flair_2_sen_train
+  val:
+    masks:    ./data/flair_2_labels_test
+    sentinel: ./data/flair_2_sen_test
+  test:
+    masks:    ./data/flair_2_labels_test
+    sentinel: ./data/flair_2_sen_test
+
+  centroids_path: ./data/flair-2_centroids_sp_to_patch.json
+  dataset_version: split_40
+  num_classes: 13
+  batch_size: 8
+  num_workers: 4
+  selected_channels: [0, 1, 2, 3, 4]
+  other_class_index: 12
+
+  # TSViT works with native temporal sequences (not monthly averages).
+  # sentinel_patch_size must match model.image_size (or model.model_config.image_size).
+  sentinel_patch_size: 10
+  use_monthly_average: false          # Keep original temporal resolution
+
+  filter_clouds_snow: false
+  cloud_snow_cover_threshold: 0.6
+  cloud_snow_prob_threshold: 50
+
+mlflow:
+  name: sentinel-temporal
+  run_name: tsvit_baseline
+  tracking_uri: null
+  note: "TSViT on Sentinel-2 time series"
+  dagshub:
+    enabled: false
+    repo_owner: your-username
+    repo_name: flair-2
+    branch: null
+
+model:
+  model_type: TSVIT                  # Selects TSViT architecture
+  encoder_name: na                   # Not applicable for TSViT
+  encoder_weights: null
+  activation: null
+  in_channels: 10                    # 10 Sentinel-2 spectral bands
+
+  # TSViT-specific architecture parameters.
+  # These can be placed directly under model: or under model.model_config:
+  image_size: 10                     # Spatial size of input patch (must match sentinel_patch_size)
+  patch_size: 2                      # ViT patch size (image_size must be divisible by patch_size)
+  max_seq_len: 50                    # Maximum temporal sequence length
+  dim: 128                           # Transformer embedding dimension
+  temporal_depth: 2                  # Number of temporal transformer blocks
+  spatial_depth: 2                   # Number of spatial transformer blocks
+  num_heads: 4                       # Attention heads
+  mlp_dim: 256                       # MLP hidden dimension in transformer blocks
+  dropout: 0.1                       # Dropout rate
+  emb_dropout: 0.1                   # Embedding dropout rate
+
+training:
+  device: cuda
+  optimizer:
+    type: AdamW
+    learning_rate: 0.05              # TSViT benefits from higher initial LR
+    betas: [0.9, 0.99]
+    weight_decay: 0.0001
+  lr_scheduler:
+    type: ReduceLROnPlateau
+    args:
+      mode: min
+      factor: 0.5
+      patience: 5
+      threshold: 0.0001
+  epochs: 30
+  early_stopping_patience: 10
+  loss_function:
+    type: CrossEntropyLoss
+    args:
+      ignore_index: 12               # Ignore "other" class
+
+experiment:
+  seed: 42
+  deterministic: true
+
+evaluation:
+  log_confusion_matrix: true
+  log_comparison: false
+  log_sample_ids: []
+
+visualization:
+  language: en
+  labels:
+    ground_truth: Ground Truth
+    prediction: Prediction
+    predicted_class: Predicted Class
+    actual_class: Actual Class
+    confusion_matrix_title: Confusion Matrix

@@ -11,8 +11,8 @@ import logging
 from collections.abc import Iterable
 
 import torch
-from torch.nn import functional
 from torch import nn
+from torch.nn import functional
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +216,22 @@ class MultimodalLateFusion(nn.Module):
 
     @staticmethod
     def _weights_to_logits(weights: Iterable[float]) -> torch.Tensor:
+        """Convert a pair of modality weights to log-space logits.
+
+        Normalizes the two weights to sum to 1, clamps to avoid log(0),
+        and returns their logarithm for use as softmax logits.
+
+        Args:
+            weights: Iterable of exactly 2 non-negative floats (aerial, sentinel).
+
+        Returns:
+            Tensor of shape (2,) with log-normalised weights.
+
+        Raises:
+            ValueError: If weights don't have exactly 2 values, are negative,
+                or sum to zero.
+
+        """
         values = list(weights)
         if len(values) != 2:  # noqa: PLR2004
             msg = "Each modality weight must have exactly 2 values (aerial, sentinel)"
@@ -233,6 +249,18 @@ class MultimodalLateFusion(nn.Module):
 
     @staticmethod
     def _prior_to_logit(prior: float) -> float:
+        """Convert a probability prior in [0, 1] to a sigmoid logit.
+
+        Args:
+            prior: Desired initial probability for the aerial gate.
+
+        Returns:
+            Logit value such that sigmoid(logit) ≈ prior.
+
+        Raises:
+            ValueError: If prior is outside [0, 1].
+
+        """
         if prior < 0.0 or prior > 1.0:
             msg = "Gate prior must be within [0, 1]"
             raise ValueError(msg)
@@ -245,6 +273,24 @@ class MultimodalLateFusion(nn.Module):
         num_classes: int,
         init_class_weights: dict[int, list[float]] | list[list[float]] | list[float],
     ) -> torch.Tensor:
+        """Build a (num_classes, 2) tensor of initial fusion logits from config weights.
+
+        Accepts three formats:
+        - ``dict[int, list[float]]``: per-class overrides, remaining classes default to 0.
+        - ``list[float]`` of length 2: global weights applied to every class.
+        - ``list[list[float]]`` of length *num_classes*: per-class weight pairs.
+
+        Args:
+            num_classes: Number of segmentation classes.
+            init_class_weights: Modality weight specification in one of the formats above.
+
+        Returns:
+            Tensor of shape (num_classes, 2) with log-normalised modality logits.
+
+        Raises:
+            ValueError: If the format or dimensions are invalid.
+
+        """
         init_logits = torch.zeros(num_classes, 2)
 
         def _is_numeric(value: object) -> bool:
@@ -287,6 +333,19 @@ class MultimodalLateFusion(nn.Module):
         num_classes: int,
         gate_class_priors: dict[int, float] | list[float] | float,
     ) -> None:
+        """Initialise gate bias so that sigmoid(bias) matches the desired priors.
+
+        Args:
+            num_classes: Number of segmentation classes.
+            gate_class_priors: Desired initial aerial-gate probability.
+                Can be a single float (applied to all classes), a list of
+                per-class floats, or a dict mapping class index to float.
+
+        Raises:
+            RuntimeError: If the gate network layout is unexpected.
+            ValueError: If indices are out of range or list length mismatches.
+
+        """
         if not isinstance(self.gate_network[-2], nn.Conv2d):
             msg = "Unexpected gate network layout; cannot set gate priors"
             raise RuntimeError(msg)
@@ -539,6 +598,7 @@ class MultimodalLateFusion(nn.Module):
 
         Returns:
             Fused output (B, K, H, W).
+
         """
         # Sum of features for attention computation
         sum_feat = aerial_logits + sentinel_logits

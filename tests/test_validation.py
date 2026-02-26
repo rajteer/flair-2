@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from src.models.validation import (
+from src.training.validation import (
     calculate_iou_scores,
     compute_timing_metrics,
     get_evaluation_metrics_dict,

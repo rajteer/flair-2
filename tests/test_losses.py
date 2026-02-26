@@ -2,7 +2,7 @@
 
 import torch
 
-from src.models.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
+from src.training.losses import CombinedDiceFocalLoss, WeightedCrossEntropyDiceLoss
 
 
 class TestCombinedDiceFocalLoss:

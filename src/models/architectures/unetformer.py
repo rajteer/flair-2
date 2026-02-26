@@ -28,7 +28,7 @@ from src.models.common_blocks import (
 )
 
 try:
-    from src.models.samba_encoder import SambaEncoder
+    from src.models.encoders.samba_encoder import SambaEncoder
 except ImportError:
     SambaEncoder = None  # type: ignore[misc, assignment]
 
@@ -45,6 +45,17 @@ class AuxHead(nn.Module):
         self.conv_out = Conv(in_channels, num_classes, kernel_size=1)
 
     def forward(self, x: torch.Tensor, h: int, w: int) -> torch.Tensor:
+        """Produce auxiliary segmentation logits upsampled to (h, w).
+
+        Args:
+            x: Feature tensor from the decoder.
+            h: Target output height.
+            w: Target output width.
+
+        Returns:
+            Logits tensor of shape (B, num_classes, h, w).
+
+        """
         feat = self.conv(x)
         feat = self.drop(feat)
         feat = self.conv_out(feat)
@@ -94,6 +105,23 @@ class Decoder(nn.Module):
         *,
         return_aux_features: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """Decode multi-scale encoder features into segmentation logits.
+
+        Args:
+            res1: Stage-1 encoder features (highest resolution).
+            res2: Stage-2 encoder features.
+            res3: Stage-3 encoder features.
+            res4: Stage-4 encoder features (lowest resolution).
+            h: Target output height.
+            w: Target output width.
+            return_aux_features: If ``True``, also return pre-head features
+                for the auxiliary loss.
+
+        Returns:
+            Segmentation logits of shape (B, num_classes, h, w), or a tuple
+            of (logits, aux_features) when *return_aux_features* is ``True``.
+
+        """
         x = self.b4(self.pre_conv(res4))
         x = self.p3(x, res3)
         x = self.b3(x)
@@ -198,7 +226,7 @@ class UNetFormer(nn.Module):
 
             try:
                 self.backbone = timm.create_model(backbone_name, **timm_kwargs)
-            except TypeError as err:
+            except TypeError:
                 if "img_size" not in timm_kwargs:
                     raise
                 logger.warning(
@@ -235,13 +263,24 @@ class UNetFormer(nn.Module):
         if int(feat.shape[-1]) == expected_channels:
             if not self._warned_nhwc_features:
                 logger.warning(
-                    "Backbone returned NHWC features; converting to NCHW for UNetFormer decoder."
+                    "Backbone returned NHWC features; converting to NCHW for UNetFormer decoder.",
                 )
                 self._warned_nhwc_features = True
             return feat.permute(0, 3, 1, 2).contiguous()
         return feat
 
     def forward(self, x: torch.Tensor) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """Run the full encoder-decoder forward pass.
+
+        Args:
+            x: Input image tensor of shape (B, C, H, W).
+
+        Returns:
+            Segmentation logits of shape (B, num_classes, H, W). During
+            training with ``use_aux_head=True``, returns a tuple of
+            (main_logits, aux_logits).
+
+        """
         h, w = x.size()[-2:]
         res1, res2, res3, res4 = self.backbone(x)
         res1 = self._ensure_nchw(res1, int(self.encoder_channels[0]))
@@ -251,7 +290,13 @@ class UNetFormer(nn.Module):
 
         if self.use_aux_head and self.training:
             main_out, aux_features = self.decoder(
-                res1, res2, res3, res4, h, w, return_aux_features=True
+                res1,
+                res2,
+                res3,
+                res4,
+                h,
+                w,
+                return_aux_features=True,
             )
             aux_out = self.aux_head(aux_features, h, w)
             return main_out, aux_out
